@@ -16,6 +16,7 @@ from web_dashboard.server import dashboard_payload, detect_order_source_dirs, de
 
 WEB_DIR = ROOT_DIR / "web_dashboard"
 SNAPSHOT_DIR = WEB_DIR / "data" / "snapshot"
+RUNTIME_CONFIG_PATH = WEB_DIR / "runtime-config.js"
 
 
 def has_local_snapshot_inputs() -> bool:
@@ -73,6 +74,44 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def normalize_storage_prefix(prefix: str) -> str:
+    return prefix.strip().strip("/")
+
+
+def build_runtime_config() -> dict[str, str]:
+    supabase_url = (os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
+    storage_bucket = (os.getenv("SUPABASE_STORAGE_BUCKET") or "").strip()
+    storage_prefix = normalize_storage_prefix(os.getenv("SUPABASE_STORAGE_PREFIX") or "latest")
+
+    if supabase_url and storage_bucket:
+        public_base = f"{supabase_url}/storage/v1/object/public/{storage_bucket}"
+        if storage_prefix:
+            public_base = f"{public_base}/{storage_prefix}"
+        return {
+            "mode": "static",
+            "staticMetaUrl": f"{public_base}/meta.json",
+            "staticDashboardUrl": f"{public_base}/dashboard.json",
+        }
+
+    return {
+        "mode": "auto",
+        "staticMetaUrl": "./data/snapshot/meta.json",
+        "staticDashboardUrl": "./data/snapshot/dashboard.json",
+    }
+
+
+def write_runtime_config(path: Path | None = None) -> Path:
+    destination = path or RUNTIME_CONFIG_PATH
+    config = build_runtime_config()
+    destination.write_text(
+        "window.DASHBOARD_CONFIG = "
+        + json.dumps(config, indent=2)
+        + ";\n",
+        encoding="utf-8",
+    )
+    return destination
+
+
 def export_snapshot(target_dir: Path | None = None) -> tuple[Path, Path]:
     generated_at = datetime.now(timezone.utc).isoformat()
     destination = target_dir or SNAPSHOT_DIR
@@ -80,6 +119,7 @@ def export_snapshot(target_dir: Path | None = None) -> tuple[Path, Path]:
     dashboard_path = destination / "dashboard.json"
 
     if not has_local_snapshot_inputs() and meta_path.exists() and dashboard_path.exists():
+        write_runtime_config()
         return meta_path, dashboard_path
 
     meta = meta_payload()
@@ -89,6 +129,7 @@ def export_snapshot(target_dir: Path | None = None) -> tuple[Path, Path]:
     static_payload = build_static_payload(payload, generated_at)
     write_json(meta_path, static_meta)
     write_json(dashboard_path, static_payload)
+    write_runtime_config()
     return meta_path, dashboard_path
 
 

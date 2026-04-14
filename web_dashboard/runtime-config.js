@@ -1,5 +1,5 @@
 window.DASHBOARD_CONFIG = {
-  mode: "auto",
-  staticMetaUrl: "./data/snapshot/meta.json",
-  staticDashboardUrl: "./data/snapshot/dashboard.json",
+  "mode": "static",
+  "staticMetaUrl": "https://smfmrieskhqcvzzgqqbe.supabase.co/storage/v1/object/public/dashboard-snapshots/latest/meta.json",
+  "staticDashboardUrl": "https://smfmrieskhqcvzzgqqbe.supabase.co/storage/v1/object/public/dashboard-snapshots/latest/dashboard.json"
 };

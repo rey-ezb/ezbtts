@@ -86,14 +86,14 @@ After upload, the dashboard reloads and uses the newest file for overlapping dat
 
 ## Free Deployment Recommendation
 
-For a zero-cost deployment, use this project in **static snapshot mode**:
+For a zero-cost deployment, use this project in **static UI + hosted snapshot data mode**:
 
 - **GitHub** stores the code and triggers deploys
 - **Netlify** hosts the static dashboard from `web_dashboard/`
 - **Python** builds fresh snapshot JSON during deploy or locally before deploy
-- **Supabase** is optional and only used if you want to upload snapshot files to free Storage
+- **Supabase** stores hosted snapshot files and dashboard/planning rows so teammates do not depend on your local folders
 
-This is the cheapest reliable shape for the current codebase because the analytics logic is still Python and pandas based. It avoids paying for always-on backend compute.
+This is the cheapest reliable shape for the current codebase because the analytics logic is still Python and pandas based. It avoids paying for always-on backend compute while still giving you a hosted shared data copy.
 
 ### What Gets Deployed
 
@@ -131,17 +131,27 @@ To finish deployment, you still need to create these free accounts yourself:
 
 I can prepare the repo and the exact settings, but I cannot create those accounts for you.
 
-### Supabase Setup (Optional)
+### Supabase Setup
 
-If you want a copy of the generated snapshot in Supabase Storage:
+If you want the dashboard data hosted independently from your laptop:
 
 1. Create a free Supabase account and project.
-2. Create a public Storage bucket, for example `dashboard-snapshots`.
-3. Add these environment variables locally before running the sync script:
+2. Run `supabase/schema.sql` in the SQL editor.
+3. Create a Storage bucket, for example `dashboard-snapshots`.
+4. Add these environment variables locally before running the sync scripts:
 
 ```bash
 SUPABASE_URL=...
 SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_STORAGE_BUCKET=dashboard-snapshots
+SUPABASE_STORAGE_PREFIX=latest
+SUPABASE_SNAPSHOT_LABEL=latest
+```
+
+For the deployed Netlify site to read the hosted snapshot files instead of the repo copy, also add these Netlify environment variables:
+
+```bash
+SUPABASE_URL=...
 SUPABASE_STORAGE_BUCKET=dashboard-snapshots
 SUPABASE_STORAGE_PREFIX=latest
 ```
@@ -154,7 +164,18 @@ python deployment/sync_snapshot_to_supabase.py
 
 This uploads `meta.json` and `dashboard.json` to Supabase Storage.
 
-There is also a starter schema file at `supabase/schema.sql` for upload tracking if you decide to use Supabase later.
+If you also want the dashboard summary and demand-planning rows written into hosted tables, run:
+
+```bash
+python deployment/sync_dashboard_to_supabase.py
+```
+
+That writes:
+
+- snapshot files into Supabase Storage
+- one row into `dashboard_snapshots`
+- the current planning table into `inventory_planning_snapshots`
+- upload tracking tables remain available for the next phase
 
 ### Local Verification
 
@@ -162,6 +183,7 @@ Run:
 
 ```bash
 python -m unittest tests.test_export_dashboard_snapshot -v
+python -m unittest tests.test_sync_dashboard_to_supabase -v
 python deployment/export_dashboard_snapshot.py
 python web_dashboard/server.py
 ```

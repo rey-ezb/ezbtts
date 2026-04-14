@@ -5,7 +5,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deployment.export_dashboard_snapshot import build_dashboard_params, build_static_meta, build_static_payload, export_snapshot
+from deployment.export_dashboard_snapshot import (
+    build_dashboard_params,
+    build_runtime_config,
+    build_static_meta,
+    build_static_payload,
+    export_snapshot,
+)
 
 
 class ExportDashboardSnapshotTests(unittest.TestCase):
@@ -48,6 +54,7 @@ class ExportDashboardSnapshotTests(unittest.TestCase):
             with (
                 patch("deployment.export_dashboard_snapshot.detect_order_source_dirs", return_value=[]),
                 patch("deployment.export_dashboard_snapshot.detect_statement_sources", return_value=[]),
+                patch("deployment.export_dashboard_snapshot.write_runtime_config"),
             ):
                 result_meta, result_dashboard = export_snapshot(target_dir)
 
@@ -55,6 +62,41 @@ class ExportDashboardSnapshotTests(unittest.TestCase):
             self.assertEqual(result_dashboard, dashboard_path)
             self.assertEqual(meta_path.read_text(encoding="utf-8"), '{"existing": true}')
             self.assertEqual(dashboard_path.read_text(encoding="utf-8"), '{"existing": true}')
+
+    def test_build_runtime_config_defaults_to_local_snapshot_files(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            config = build_runtime_config()
+
+        self.assertEqual(
+            config,
+            {
+                "mode": "auto",
+                "staticMetaUrl": "./data/snapshot/meta.json",
+                "staticDashboardUrl": "./data/snapshot/dashboard.json",
+            },
+        )
+
+    def test_build_runtime_config_uses_public_supabase_storage_urls(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "SUPABASE_URL": "https://smfmrieskhqcvzzgqqbe.supabase.co/",
+                "SUPABASE_STORAGE_BUCKET": "dashboard-snapshots",
+                "SUPABASE_STORAGE_PREFIX": "/latest/",
+            },
+            clear=True,
+        ):
+            config = build_runtime_config()
+
+        self.assertEqual(config["mode"], "static")
+        self.assertEqual(
+            config["staticMetaUrl"],
+            "https://smfmrieskhqcvzzgqqbe.supabase.co/storage/v1/object/public/dashboard-snapshots/latest/meta.json",
+        )
+        self.assertEqual(
+            config["staticDashboardUrl"],
+            "https://smfmrieskhqcvzzgqqbe.supabase.co/storage/v1/object/public/dashboard-snapshots/latest/dashboard.json",
+        )
 
 
 if __name__ == "__main__":
