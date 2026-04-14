@@ -11,6 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 
+from web_dashboard.file_replacement import keep_latest_file_rows_by_date
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 WEB_DIR = Path(__file__).resolve().parent
@@ -983,6 +985,7 @@ def load_statement_rows_uncached(files: list[Path]) -> pd.DataFrame:
         frame = read_table_file(path)
         if frame is not None and not frame.empty:
             frame["statement_source_file"] = path.name
+            frame["statement_source_mtime"] = path.stat().st_mtime
             frames.append(frame)
     if not frames:
         return pd.DataFrame()
@@ -1036,6 +1039,7 @@ def load_statement_rows_uncached(files: list[Path]) -> pd.DataFrame:
             "adjustment_reason": series_for(adjustment_reason_col),
             "amount": pd.to_numeric(series_for(amount_col).replace({"": None}), errors="coerce").fillna(0.0),
             "statement_source_file": df["statement_source_file"].astype(str),
+            "statement_source_mtime": pd.to_numeric(df["statement_source_mtime"], errors="coerce"),
         }
     )
     normalized["order_id"] = normalized["order_id"].where(normalized["order_id"].ne(""), normalized["related_order_id"])
@@ -1130,6 +1134,12 @@ def load_statement_rows_uncached(files: list[Path]) -> pd.DataFrame:
     normalized["typed_other_fee"] = typed_amount.where(typed_category.eq("other") & detail_fee_presence, 0.0)
     normalized = normalized.dropna(subset=["statement_date"]).copy()
     normalized = normalized.loc[normalized["order_id"].ne("") | normalized["amount"].ne(0)].copy()
+    normalized = keep_latest_file_rows_by_date(
+        normalized,
+        date_column="statement_date",
+        file_column="statement_source_file",
+        mtime_column="statement_source_mtime",
+    )
     return normalized.reset_index(drop=True)
 
 
@@ -2212,6 +2222,7 @@ def load_paid_time_finance() -> pd.DataFrame:
             if not frame.empty:
                 frame["source_type"] = source_label
                 frame["source_file"] = path.name
+                frame["source_file_mtime"] = path.stat().st_mtime
                 frame["source_file_month"] = infer_month_start_from_filename(path.name)
                 frames.append(frame)
     if not frames:
@@ -2237,6 +2248,13 @@ def load_paid_time_finance() -> pd.DataFrame:
     df["paid_time_inferred_from_file_month"] = df["reporting_date"].isna() & df["source_file_month"].notna()
     df["reporting_date"] = df["reporting_date"].fillna(df["source_file_month"])
     df = df.dropna(subset=["reporting_date"]).copy()
+    df = keep_latest_file_rows_by_date(
+        df,
+        date_column="reporting_date",
+        file_column="source_file",
+        mtime_column="source_file_mtime",
+        partition_columns=["source_type"],
+    )
     if df.empty:
         return pd.DataFrame()
     line_daily = (
@@ -2316,6 +2334,7 @@ def load_paid_time_operational() -> pd.DataFrame:
             if not frame.empty:
                 frame["source_type"] = source_label
                 frame["source_file"] = path.name
+                frame["source_file_mtime"] = path.stat().st_mtime
                 frame["source_file_month"] = infer_month_start_from_filename(path.name)
                 frames.append(frame)
     if not frames:
@@ -2353,6 +2372,13 @@ def load_paid_time_operational() -> pd.DataFrame:
     df["reporting_date"] = df["paid_time_date"].fillna(df["source_file_month"])
     df["paid_time_inferred_from_file_month"] = df["paid_time_date"].isna() & df["source_file_month"].notna()
     df = df.dropna(subset=["reporting_date"]).copy()
+    df = keep_latest_file_rows_by_date(
+        df,
+        date_column="reporting_date",
+        file_column="source_file",
+        mtime_column="source_file_mtime",
+        partition_columns=["source_type"],
+    )
     if df.empty:
         return pd.DataFrame()
     df["order_created_date"] = df["Created Time"].dt.normalize()

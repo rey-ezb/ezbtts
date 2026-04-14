@@ -56,6 +56,8 @@ The web dashboard reads from `analysis_output/` by default, lets you switch anal
 
 If you also drop TikTok finance workbooks into a folder like `Finance Tab/`, the dashboard will reference those finance rows back to the order exports by `Order ID` and expose statement-based reconciliation.
 
+If you add a newer export file for dates you already had, the dashboard now prefers the newer file for those overlapping dates. In simple terms: newer file wins for the same day, so refreshed monthly exports replace older daily or monthly data for the dates they cover.
+
 The web dashboard includes:
 
 - overview KPI cards
