@@ -1,0 +1,11 @@
+[build]
+  command = "python deployment/export_dashboard_snapshot.py"
+  publish = "web_dashboard"
+
+[build.environment]
+  PYTHON_VERSION = "3.12"
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200

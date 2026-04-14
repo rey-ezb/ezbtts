@@ -1,6 +1,7 @@
 const state = {
   meta: null,
   payload: null,
+  deploymentMode: "dynamic",
   activeWorkspace: "orders",
   activeCard: "orders-gross-sales",
   chartModes: {
@@ -21,6 +22,33 @@ const state = {
   },
   detailExpanded: {},
 };
+
+function getDashboardConfig() {
+  return window.DASHBOARD_CONFIG || {};
+}
+
+function resolveDeploymentMode() {
+  const configuredMode = getDashboardConfig().mode;
+  if (configuredMode === "dynamic" || configuredMode === "static") return configuredMode;
+  const host = window.location.hostname;
+  if (host === "127.0.0.1" || host === "localhost") return "dynamic";
+  return "static";
+}
+
+function metaUrl() {
+  const config = getDashboardConfig();
+  return state.deploymentMode === "static" ? config.staticMetaUrl || "./data/snapshot/meta.json" : "/api/meta";
+}
+
+function dashboardUrl() {
+  const config = getDashboardConfig();
+  if (state.deploymentMode === "static") return config.staticDashboardUrl || "./data/snapshot/dashboard.json";
+  return `/api/dashboard?${buildQuery()}`;
+}
+
+function staticModeEnabled() {
+  return state.deploymentMode === "static";
+}
 
 const workspaces = [
   {
@@ -221,6 +249,24 @@ function renderMeta(meta) {
   document.getElementById("radiusMilesSelect").value = "20";
   renderSourceToggles(meta.availableSources);
   syncDateBounds();
+  applyDeploymentModeUi();
+}
+
+function applyDeploymentModeUi() {
+  if (!staticModeEnabled()) return;
+  document.getElementById("outputSelect").disabled = true;
+  document.getElementById("dateBasisSelect").disabled = true;
+  document.getElementById("orderBucketModeSelect").disabled = true;
+  document.getElementById("startDate").disabled = true;
+  document.getElementById("endDate").disabled = true;
+  document.getElementById("targetZip").disabled = true;
+  document.getElementById("radiusMilesSelect").disabled = true;
+  document.getElementById("targetCity").disabled = true;
+  document.getElementById("targetState").disabled = true;
+  const submitButton = document.getElementById("applyFiltersButton");
+  submitButton.disabled = true;
+  submitButton.textContent = "Snapshot mode";
+  document.getElementById("refreshButton").textContent = "Reload snapshot";
 }
 
 function kpiCard(card) {
@@ -731,6 +777,8 @@ function renderSummary(summary) {
   const dataQuality = state.payload?.dataQualitySummary || {};
   const orderBucketMode = summary.order_bucket_mode === "file_month" ? "Raw Export File Month" : "Paid Time";
   const metaHtml = [
+    staticModeEnabled() ? statChip("Deploy Mode", "Static snapshot", "accent") : "",
+    state.meta?.snapshotGeneratedAt ? statChip("Snapshot", new Date(state.meta.snapshotGeneratedAt).toLocaleString(), "accent") : "",
     statChip("Output", state.payload?.selectedOutputDir || "analysis_output", "primary"),
     statChip("Sources", summary.selected_sources.join(", "), "primary"),
     statChip("Orders basis", "Paid time", "primary"),
@@ -1826,7 +1874,7 @@ async function loadDashboard() {
   setSubmitState(true);
   setLoading();
   try {
-    const payload = await fetchJson(`/api/dashboard?${buildQuery()}`);
+    const payload = await fetchJson(dashboardUrl());
     state.payload = payload;
     renderSummary(payload.summary);
     renderWorkspaceNav();
@@ -1839,7 +1887,8 @@ async function loadDashboard() {
 }
 
 async function init() {
-  state.meta = await fetchJson("/api/meta");
+  state.deploymentMode = resolveDeploymentMode();
+  state.meta = await fetchJson(metaUrl());
   renderMeta(state.meta);
   document.getElementById("dateBasisSelect").addEventListener("change", () => {
     syncDateBounds();

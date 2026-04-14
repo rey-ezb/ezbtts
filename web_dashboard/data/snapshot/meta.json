@@ -1,0 +1,23 @@
+{
+  "availableSources": [
+    "Replacements",
+    "Sales",
+    "Samples"
+  ],
+  "minDate": "2024-02-01",
+  "maxDate": "2026-03-31",
+  "statementMinDate": "2024-02-01",
+  "statementMaxDate": "2026-03-31",
+  "inventorySnapshotDate": "2026-04-12",
+  "statementFilesDetected": 23,
+  "outputDirs": [
+    "analysis_output"
+  ],
+  "defaultOutputDir": "analysis_output",
+  "orderBucketModes": [
+    "paid_time",
+    "file_month"
+  ],
+  "deploymentMode": "static",
+  "snapshotGeneratedAt": "2026-04-14T18:26:33.190288+00:00"
+}
