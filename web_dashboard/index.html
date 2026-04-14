@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>EZ Bombs TikTok Dashboard</title>
-    <link rel="stylesheet" href="./styles.css?v=20260414-3">
+    <link rel="stylesheet" href="./styles.css?v=20260414-6">
   </head>
   <body>
     <div class="app-shell">
@@ -15,7 +15,16 @@
           <p class="hero-subtitle">Orders, statements, products, customers, and geography in one working surface.</p>
         </div>
         <div class="hero-actions">
-          <button id="refreshButton" class="button button-primary">Refresh data</button>
+          <div class="hero-upload">
+            <div class="hero-upload-title">Upload Files</div>
+            <div class="hero-upload-controls">
+              <select id="uploadKind"></select>
+              <input id="uploadFiles" type="file" multiple>
+              <button id="uploadButton" class="button button-secondary">Upload Files</button>
+              <button id="refreshButton" class="button button-primary">Refresh data</button>
+            </div>
+            <div id="uploadStatus" class="upload-status" aria-live="polite"></div>
+          </div>
         </div>
       </header>
 
@@ -86,6 +95,7 @@
             </label>
           </div>
         </div>
+
       </section>
 
       <section id="summaryMeta" class="summary-strip"></section>
@@ -98,6 +108,6 @@
     </div>
 
     <script src="./runtime-config.js?v=20260414-1"></script>
-    <script src="./app.js?v=20260414-6"></script>
+    <script src="./app.js?v=20260414-9"></script>
   </body>
 </html>

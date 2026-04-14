@@ -71,6 +71,19 @@ The web dashboard includes:
 - cohort retention view
 - daily, product, COGS, reconciliation, location, KPI, and report tabs
 
+### Local Upload Flow
+
+The local dashboard now has an upload area at the top of the page.
+
+You can use it to place files into the right local folders:
+
+- `All orders`
+- `Samples`
+- `Replacements`
+- `Finance Tab`
+
+After upload, the dashboard reloads and uses the newest file for overlapping dates.
+
 ## Free Deployment Recommendation
 
 For a zero-cost deployment, use this project in **static snapshot mode**:
@@ -109,6 +122,15 @@ Netlify is configured to run that command automatically using `netlify.toml`.
 
 Netlify will build the snapshot and deploy the static dashboard.
 
+### What You Need To Create
+
+To finish deployment, you still need to create these free accounts yourself:
+
+1. Netlify account
+2. Supabase account if you want remote storage or upload tracking later
+
+I can prepare the repo and the exact settings, but I cannot create those accounts for you.
+
 ### Supabase Setup (Optional)
 
 If you want a copy of the generated snapshot in Supabase Storage:
@@ -131,6 +153,8 @@ python deployment/sync_snapshot_to_supabase.py
 ```
 
 This uploads `meta.json` and `dashboard.json` to Supabase Storage.
+
+There is also a starter schema file at `supabase/schema.sql` for upload tracking if you decide to use Supabase later.
 
 ### Local Verification
 

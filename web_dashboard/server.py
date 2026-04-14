@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cgi
 import json
 import math
 import re
@@ -11,7 +12,16 @@ from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 
+from web_dashboard.demand_planning import (
+    DEFAULT_FORECAST_UPLIFT_PCT,
+    FORECAST_PRODUCT_PARAM_MAP,
+    calculate_planning_row,
+    choose_baseline_window,
+    planning_defaults,
+)
+from web_dashboard.dashboard_response_cache import DashboardResponseCache
 from web_dashboard.file_replacement import keep_latest_file_rows_by_date
+from web_dashboard.upload_helpers import UPLOAD_TARGET_FOLDERS, sanitize_upload_filename, upload_directory_for_kind
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -171,6 +181,9 @@ MONTH_NAME_TO_NUMBER = {
     "november": 11,
     "december": 12,
 }
+
+STORE: "DataStore | None" = None
+DASHBOARD_RESPONSE_CACHE = DashboardResponseCache()
 TIKTOK_INVENTORY_FIELDS = {
     "Birria": ("birria_in_transit", "birria_on_hand"),
     "Pozole": ("pozole_in_transit", "pozole_on_hand"),
@@ -375,8 +388,16 @@ def load_tiktok_inventory_history() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def build_inventory_planning_rows(component_cogs_df: pd.DataFrame, inventory_snapshot: dict[str, Any], start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
-    days = max((end_date - start_date).days + 1, 1)
+def build_inventory_planning_rows(
+    component_cogs_df: pd.DataFrame,
+    inventory_snapshot: dict[str, Any],
+    horizon_start: pd.Timestamp,
+    horizon_end: pd.Timestamp,
+    baseline_start: pd.Timestamp,
+    baseline_end: pd.Timestamp,
+    uplift_overrides: dict[str, float],
+    baseline_label: str,
+) -> pd.DataFrame:
     demand_lookup: dict[str, float] = {}
     if component_cogs_df is not None and not component_cogs_df.empty:
         for _, row in component_cogs_df.iterrows():
@@ -384,50 +405,24 @@ def build_inventory_planning_rows(component_cogs_df: pd.DataFrame, inventory_sna
             if mapped_name:
                 demand_lookup[mapped_name] = float(row.get("component_units_sold", 0) or 0)
 
-    snapshot_products = inventory_snapshot.get("products", {}) if isinstance(inventory_snapshot, dict) else {}
     rows: list[dict[str, Any]] = []
-    snapshot_date = inventory_snapshot.get("snapshot_date") if isinstance(inventory_snapshot, dict) else None
     for dashboard_product, inventory_name in INVENTORY_PRODUCT_KEY_MAP.items():
-        inv = snapshot_products.get(inventory_name, {})
-        on_hand = float(inv.get("on_hand", 0) or 0)
-        in_transit = float(inv.get("in_transit", 0) or 0)
-        total_supply = on_hand + in_transit
         units_sold = float(demand_lookup.get(inventory_name, 0) or 0)
-        avg_daily_demand = units_sold / days if days else 0.0
-        days_on_hand = (on_hand / avg_daily_demand) if avg_daily_demand > 0 else None
-        days_total = (total_supply / avg_daily_demand) if avg_daily_demand > 0 else None
-        projected_stockout_date = (
-            (pd.Timestamp(snapshot_date) + pd.to_timedelta(math.floor(days_on_hand), unit="D")).strftime("%Y-%m-%d")
-            if snapshot_date is not None and days_on_hand is not None
-            else None
+        uplift_pct = float(uplift_overrides.get(dashboard_product, DEFAULT_FORECAST_UPLIFT_PCT))
+        planning_row = calculate_planning_row(
+            dashboard_product=dashboard_product,
+            inventory_product=inventory_name,
+            inventory_snapshot=inventory_snapshot,
+            units_sold_in_baseline=units_sold,
+            baseline_start=baseline_start,
+            baseline_end=baseline_end,
+            horizon_start=horizon_start,
+            horizon_end=horizon_end,
+            uplift_pct=uplift_pct,
         )
-        if avg_daily_demand <= 0:
-            status = "No demand in selected window"
-        elif days_on_hand is not None and days_on_hand < 14:
-            status = "Urgent"
-        elif days_on_hand is not None and days_on_hand < 28:
-            status = "Watch"
-        else:
-            status = "Healthy"
-        rows.append(
-            {
-                "product": dashboard_product,
-                "inventory_product": inventory_name,
-                "snapshot_date": snapshot_date,
-                "on_hand": on_hand,
-                "in_transit": in_transit,
-                "total_supply": total_supply,
-                "units_sold_in_window": units_sold,
-                "avg_daily_demand": avg_daily_demand if avg_daily_demand > 0 else None,
-                "days_on_hand": days_on_hand,
-                "days_total_supply": days_total,
-                "weeks_on_hand": (days_on_hand / 7) if days_on_hand is not None else None,
-                "weeks_total_supply": (days_total / 7) if days_total is not None else None,
-                "projected_stockout_date": projected_stockout_date,
-                "status": status,
-            }
-        )
-    return pd.DataFrame(rows).sort_values(["days_on_hand", "product"], na_position="last").reset_index(drop=True)
+        planning_row["baseline_label"] = baseline_label
+        rows.append(planning_row)
+    return pd.DataFrame(rows).sort_values(["reorder_quantity", "weeks_on_hand", "product"], ascending=[False, True, True], na_position="last").reset_index(drop=True)
 
 
 def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -2426,14 +2421,24 @@ def load_output_data(output_name: str | None) -> dict[str, Any]:
     return {"directory": selected.name, "kpi_full": kpi_df, "report_md": report_md}
 
 
-STORE: DataStore | None = None
-
-
 def get_store() -> DataStore:
     global STORE
     if STORE is None:
         STORE = DataStore.load()
     return STORE
+
+
+def dashboard_signature() -> str:
+    parts = [
+        str(CACHE_SCHEMA_VERSION),
+        str(CACHE_FILE.stat().st_mtime if CACHE_FILE.exists() else 0.0),
+        str(STATEMENT_CACHE_FILE.stat().st_mtime if STATEMENT_CACHE_FILE.exists() else 0.0),
+        str(INVENTORY_CACHE_FILE.stat().st_mtime if INVENTORY_CACHE_FILE.exists() else 0.0),
+    ]
+    for path in detect_output_dirs():
+        parts.append(path.name)
+        parts.append(str(path.stat().st_mtime if path.exists() else 0.0))
+    return "|".join(parts)
 
 
 def meta_payload() -> dict[str, Any]:
@@ -2453,10 +2458,17 @@ def meta_payload() -> dict[str, Any]:
         "outputDirs": output_dirs,
         "defaultOutputDir": DEFAULT_OUTPUT_DIR.name if DEFAULT_OUTPUT_DIR.exists() else (output_dirs[0] if output_dirs else None),
         "orderBucketModes": ["paid_time", "file_month"],
+        "uploadTargets": [{"value": key, "label": value} for key, value in UPLOAD_TARGET_FOLDERS.items()],
+        "planningDefaults": planning_defaults(),
     }
 
 
 def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
+    signature = dashboard_signature()
+    cached_payload = DASHBOARD_RESPONSE_CACHE.get(params, signature)
+    if cached_payload is not None:
+        return cached_payload
+
     store = get_store()
     start_raw = params.get("start", [store.min_date()])[0]
     end_raw = params.get("end", [store.max_date()])[0]
@@ -2468,10 +2480,16 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
     radius_miles = int(params.get("radius_miles", ["20"])[0] or 20)
     target_city = params.get("target_city", [""])[0]
     target_state = params.get("target_state", [""])[0]
+    planning_baseline = params.get("planning_baseline", ["last_full_month"])[0]
+    planning_baseline_start_raw = params.get("planning_baseline_start", [""])[0]
+    planning_baseline_end_raw = params.get("planning_baseline_end", [""])[0]
+    planning_default_uplift = float(params.get("planning_default_uplift", [str(DEFAULT_FORECAST_UPLIFT_PCT)])[0] or DEFAULT_FORECAST_UPLIFT_PCT)
     selected_sources = [part for part in sources_raw.split(",") if part] or store.available_sources()
 
     start_date = pd.Timestamp(start_raw)
     end_date = pd.Timestamp(end_raw)
+    planning_baseline_start = pd.Timestamp(planning_baseline_start_raw) if str(planning_baseline_start_raw).strip() else start_date
+    planning_baseline_end = pd.Timestamp(planning_baseline_end_raw) if str(planning_baseline_end_raw).strip() else end_date
 
     output_data = load_output_data(output_dir)
     kpi_full_df = output_data["kpi_full"]
@@ -2485,7 +2503,26 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
 
     selected_source_operational_df = store.raw_operational.loc[store.raw_operational["source_type"].isin(selected_sources)].copy()
     selected_source_operational_df = apply_order_bucket_mode(selected_source_operational_df, order_bucket_mode)
+    latest_operational_date = (
+        pd.to_datetime(selected_source_operational_df["reporting_date"], errors="coerce").max()
+        if selected_source_operational_df is not None and not selected_source_operational_df.empty
+        else end_date
+    )
+    baseline_start, baseline_end, baseline_label = choose_baseline_window(
+        latest_operational_date,
+        planning_baseline,
+        start_date,
+        end_date,
+        planning_baseline_start,
+        planning_baseline_end,
+    )
+    forecast_overrides = {product: planning_default_uplift for product in FORECAST_PRODUCT_PARAM_MAP}
+    for product, param_name in FORECAST_PRODUCT_PARAM_MAP.items():
+        raw_value = params.get(param_name, [""])[0]
+        if str(raw_value).strip():
+            forecast_overrides[product] = float(raw_value)
     filtered_operational_df = filter_daily(selected_source_operational_df, start_date, end_date, selected_sources)
+    planning_operational_df = filter_daily(selected_source_operational_df, baseline_start, baseline_end, selected_sources)
     filtered_finance_df = build_order_export_finance_view(filtered_operational_df)
     order_level_df = build_order_level_view(selected_source_operational_df)
     filtered_order_level_df = (
@@ -2504,11 +2541,22 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
     data_quality_summary = build_data_quality_summary(filtered_operational_df, order_bucket_mode)
     raw_product_name_df = build_raw_product_name_view(filtered_operational_df)
     filtered_product_df = build_filtered_product_view(filtered_operational_df)
+    planning_product_df = build_filtered_product_view(planning_operational_df)
     filtered_status_df = build_filtered_status_view(filtered_operational_df)
     listing_cogs_df, component_cogs_df = build_cogs_views(filtered_product_df)
+    _planning_listing_cogs_df, planning_component_cogs_df = build_cogs_views(planning_product_df)
     inventory_history_df = load_tiktok_inventory_history()
     inventory_snapshot = latest_tiktok_inventory_snapshot(inventory_history_df)
-    inventory_planning_df = build_inventory_planning_rows(component_cogs_df, inventory_snapshot, start_date, end_date)
+    inventory_planning_df = build_inventory_planning_rows(
+        planning_component_cogs_df,
+        inventory_snapshot,
+        start_date,
+        end_date,
+        baseline_start,
+        baseline_end,
+        forecast_overrides,
+        baseline_label,
+    )
     math_audit_rows = build_math_audit(filtered_operational_df, filtered_product_df, component_cogs_df)
     reconciliation_rows, unmatched_statement_rows, unmatched_order_rows, reconciliation_summary = build_reconciliation_view(
         order_level_df,
@@ -2540,6 +2588,10 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
         "radius_miles": radius_miles,
         "target_city": target_city.strip() if isinstance(target_city, str) else "",
         "target_state": target_state.strip().upper() if isinstance(target_state, str) else "",
+        "planning_baseline": planning_baseline,
+        "planning_baseline_start": baseline_start.strftime("%Y-%m-%d"),
+        "planning_baseline_end": baseline_end.strftime("%Y-%m-%d"),
+        "planning_default_uplift": planning_default_uplift,
     }
 
     cohort_heatmap_payload: list[dict[str, Any]] = []
@@ -2553,7 +2605,7 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
     if not kpi_full_df.empty:
         kpi_rows = records(kpi_full_df[["metric", "category", "formatted_value", "formula", "notes"]])
 
-    return {
+    payload = {
         "summary": {key: json_safe(value) for key, value in summary.items()},
         "orderSummary": {key: json_safe(value) for key, value in {**order_summary, **source_units, **order_health_metrics, **customer_metrics}.items()},
         "statementSummary": {key: json_safe(value) for key, value in statement_summary.items()},
@@ -2572,6 +2624,13 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
         "inventoryHistoryRows": records(inventory_history_df.sort_values("date", ascending=False).head(365)),
         "inventoryPlanningRows": records(inventory_planning_df),
         "inventorySnapshot": {key: json_safe(value) for key, value in inventory_snapshot.items()} if inventory_snapshot else {},
+        "planningConfig": {
+            "baselineLabel": baseline_label,
+            "baselineStart": json_safe(baseline_start),
+            "baselineEnd": json_safe(baseline_end),
+            "defaultUpliftPct": planning_default_uplift,
+            "productForecasts": [{"product": product, "uplift_pct": json_safe(value)} for product, value in forecast_overrides.items()],
+        },
         "mathAuditRows": records(pd.DataFrame(math_audit_rows)),
         "reconciliationRows": records(reconciliation_rows.head(200)),
         "unmatchedStatementRows": records(unmatched_statement_rows.head(200)),
@@ -2588,6 +2647,8 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
         "reportMarkdown": report_md,
         "selectedOutputDir": output_data["directory"],
     }
+    DASHBOARD_RESPONSE_CACHE.set(params, signature, payload)
+    return payload
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -2613,6 +2674,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.path = "/index.html"
         return super().do_GET()
 
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/upload":
+            self.handle_upload()
+            return
+        self.send_error(404, "Not Found")
+
     def log_message(self, format: str, *args: Any) -> None:
         return
 
@@ -2623,6 +2691,62 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def respond_json_error(self, status: int, message: str) -> None:
+        body = json.dumps({"error": message}).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def handle_upload(self) -> None:
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            self.respond_json_error(400, "Upload must use multipart form data.")
+            return
+
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={
+                "REQUEST_METHOD": "POST",
+                "CONTENT_TYPE": content_type,
+            },
+        )
+        upload_kind = form.getfirst("upload_kind", "")
+        try:
+            target_dir = upload_directory_for_kind(BASE_DIR, upload_kind)
+        except ValueError as error:
+            self.respond_json_error(400, str(error))
+            return
+
+        file_fields = form["files"] if "files" in form else []
+        if not isinstance(file_fields, list):
+            file_fields = [file_fields]
+
+        saved_files: list[dict[str, Any]] = []
+        for field in file_fields:
+            if not getattr(field, "filename", ""):
+                continue
+            try:
+                filename = sanitize_upload_filename(field.filename)
+            except ValueError as error:
+                self.respond_json_error(400, str(error))
+                return
+            payload = field.file.read()
+            destination = target_dir / filename
+            destination.write_bytes(payload)
+            saved_files.append({"filename": filename, "size": len(payload), "folder": target_dir.name})
+
+        if not saved_files:
+            self.respond_json_error(400, "Choose at least one file to upload.")
+            return
+
+        global STORE
+        STORE = None
+        DASHBOARD_RESPONSE_CACHE.clear()
+        self.respond_json({"message": f"Uploaded {len(saved_files)} file(s) to {target_dir.name}.", "savedFiles": saved_files})
 
 
 def main() -> None:

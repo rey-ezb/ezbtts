@@ -8,7 +8,7 @@
   "maxDate": "2026-03-31",
   "statementMinDate": "2024-02-01",
   "statementMaxDate": "2026-03-31",
-  "inventorySnapshotDate": "2026-04-12",
+  "inventorySnapshotDate": "2026-04-13",
   "statementFilesDetected": 23,
   "outputDirs": [
     "analysis_output"
@@ -18,6 +18,78 @@
     "paid_time",
     "file_month"
   ],
+  "uploadTargets": [
+    {
+      "value": "sales",
+      "label": "All orders"
+    },
+    {
+      "value": "samples",
+      "label": "Samples"
+    },
+    {
+      "value": "replacements",
+      "label": "Replacements"
+    },
+    {
+      "value": "statements",
+      "label": "Finance Tab"
+    }
+  ],
+  "planningDefaults": {
+    "baseline": "last_full_month",
+    "default_uplift_pct": 35.0,
+    "baselineOptions": [
+      {
+        "value": "last_full_month",
+        "label": "Last Full Month"
+      },
+      {
+        "value": "last_30_days",
+        "label": "Last 30 Days"
+      },
+      {
+        "value": "last_90_days",
+        "label": "Last 90 Days"
+      },
+      {
+        "value": "custom_range",
+        "label": "Custom Range"
+      }
+    ],
+    "productOverrides": [
+      {
+        "product": "Birria Bomb 2-Pack",
+        "param": "forecast_birria",
+        "default_uplift_pct": 35.0
+      },
+      {
+        "product": "Pozole Bomb 2-Pack",
+        "param": "forecast_pozole",
+        "default_uplift_pct": 35.0
+      },
+      {
+        "product": "Tinga Bomb 2-Pack",
+        "param": "forecast_tinga",
+        "default_uplift_pct": 35.0
+      },
+      {
+        "product": "Pozole Verde Bomb 2-Pack",
+        "param": "forecast_pozole_verde",
+        "default_uplift_pct": 35.0
+      },
+      {
+        "product": "Brine Bomb",
+        "param": "forecast_brine",
+        "default_uplift_pct": 35.0
+      },
+      {
+        "product": "Variety Pack",
+        "param": "forecast_variety_pack",
+        "default_uplift_pct": 35.0
+      }
+    ]
+  },
   "deploymentMode": "static",
-  "snapshotGeneratedAt": "2026-04-14T18:59:23.805270+00:00"
+  "snapshotGeneratedAt": "2026-04-14T20:43:35.884598+00:00"
 }

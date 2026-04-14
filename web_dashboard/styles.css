@@ -170,6 +170,38 @@ tr {
   justify-content: flex-end;
 }
 
+.hero-upload {
+  display: grid;
+  gap: 10px;
+  min-width: min(520px, 100%);
+}
+
+.hero-upload-title {
+  font-size: 0.76rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.hero-upload-controls {
+  display: grid;
+  grid-template-columns: 0.95fr 1.4fr auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.hero-upload-controls select,
+.hero-upload-controls input[type="file"] {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 12px 14px;
+  min-height: 46px;
+}
+
 .command-center {
   margin-top: 18px;
   padding: 16px;
@@ -205,6 +237,10 @@ tr {
   grid-template-columns: 0.9fr 0.7fr 1fr 0.7fr;
 }
 
+.control-grid-planning {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .field {
   display: grid;
   gap: 8px;
@@ -220,11 +256,28 @@ tr {
 }
 
 .field-wide {
-    min-width: 0;
-  }
+  min-width: 0;
+  grid-column: 1 / -1;
+}
+
+.field-hidden {
+  display: none;
+}
+
+.planning-note div {
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
 
 .field-submit {
   align-self: end;
+}
+
+.upload-status {
+  min-height: 22px;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 .button-inline {
@@ -502,10 +555,9 @@ input:focus,
 }
 
 .workspace-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  align-items: end;
+  display: grid;
+  gap: 14px;
+  align-items: start;
 }
 
 .workspace-header h2 {
@@ -518,6 +570,11 @@ input:focus,
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  justify-content: flex-start;
+}
+
+.planning-panel .control-grid-planning {
+  align-items: start;
 }
 
 .subtab-button {
@@ -539,13 +596,21 @@ input:focus,
 .workspace-main {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .overview-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.38fr) minmax(300px, 0.88fr);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
   gap: 16px;
   align-items: start;
+}
+
+.overview-grid > *,
+.workspace-header > *,
+.workspace-main > *,
+.panel {
+  min-width: 0;
 }
 
 .panel {
@@ -834,6 +899,7 @@ input:focus,
   background: #ffffff;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
   max-width: 100%;
+  width: 100%;
 }
 
 .table-wrap-compact {
@@ -891,6 +957,30 @@ th:first-child {
   overflow-wrap: anywhere;
   min-width: 160px;
   max-width: 30ch;
+}
+
+.sticky-first-col {
+  position: sticky;
+  left: 0;
+}
+
+th.sticky-first-col {
+  z-index: 3;
+  background: #f7fbff;
+}
+
+td.sticky-first-col {
+  z-index: 2;
+  background: #ffffff;
+  box-shadow: 8px 0 10px rgba(219, 230, 245, 0.7);
+}
+
+tbody tr:nth-child(even) td.sticky-first-col {
+  background: rgba(248, 251, 255, 0.72);
+}
+
+tbody tr:hover td.sticky-first-col {
+  background: #f8fbff;
 }
 
 .num {
@@ -958,6 +1048,12 @@ th:first-child {
   background: rgba(255, 255, 255, 0.72);
 }
 
+.planning-message {
+  color: var(--danger);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 @media (max-width: 1280px) {
   .overview-grid {
     grid-template-columns: 1fr;
@@ -991,7 +1087,9 @@ th:first-child {
 
   .detail-meta,
   .control-grid,
-  .control-grid-targeting {
+  .control-grid-targeting,
+  .control-grid-planning,
+  .hero-upload-controls {
     grid-template-columns: 1fr;
   }
 

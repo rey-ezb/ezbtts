@@ -21,6 +21,15 @@ const state = {
     audit: "audit",
   },
   detailExpanded: {},
+  planningMessage: "",
+  planningSettings: {
+    baseline: "last_full_month",
+    defaultUpliftPct: "35",
+    baselineStart: "",
+    baselineEnd: "",
+    productForecasts: {},
+    baselineOptions: [],
+  },
 };
 
 function getDashboardConfig() {
@@ -48,6 +57,27 @@ function dashboardUrl() {
 
 function staticModeEnabled() {
   return state.deploymentMode === "static";
+}
+
+const planningInputs = [
+  { product: "Birria Bomb 2-Pack", inputId: "forecastBirria", param: "forecast_birria" },
+  { product: "Pozole Bomb 2-Pack", inputId: "forecastPozole", param: "forecast_pozole" },
+  { product: "Tinga Bomb 2-Pack", inputId: "forecastTinga", param: "forecast_tinga" },
+  { product: "Pozole Verde Bomb 2-Pack", inputId: "forecastPozoleVerde", param: "forecast_pozole_verde" },
+  { product: "Brine Bomb", inputId: "forecastBrine", param: "forecast_brine" },
+  { product: "Variety Pack", inputId: "forecastVarietyPack", param: "forecast_variety_pack" },
+];
+
+const defaultPlanningBaselineOptions = [
+  { value: "last_full_month", label: "Last Full Month" },
+  { value: "last_30_days", label: "Last 30 Days" },
+  { value: "last_90_days", label: "Last 90 Days" },
+  { value: "custom_range", label: "Custom Range" },
+];
+
+function planningSettingValue(param) {
+  const defaultUplift = state.planningSettings.defaultUpliftPct || "35";
+  return state.planningSettings.productForecasts[param] || defaultUplift;
 }
 
 const workspaces = [
@@ -159,6 +189,13 @@ async function fetchJson(url) {
   return response.json();
 }
 
+async function postForm(url, formData) {
+  const response = await fetch(url, { method: "POST", body: formData });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
+  return payload;
+}
+
 function selectedSources() {
   return [...document.querySelectorAll("input[name='source']:checked")].map((el) => el.value);
 }
@@ -210,6 +247,13 @@ function buildQuery() {
   params.set("target_city", document.getElementById("targetCity").value.trim());
   params.set("target_state", document.getElementById("targetState").value.trim().toUpperCase());
   params.set("radius_miles", document.getElementById("radiusMilesSelect").value);
+  params.set("planning_baseline", state.planningSettings.baseline || "last_full_month");
+  params.set("planning_baseline_start", state.planningSettings.baselineStart || "");
+  params.set("planning_baseline_end", state.planningSettings.baselineEnd || "");
+  params.set("planning_default_uplift", state.planningSettings.defaultUpliftPct || "35");
+  planningInputs.forEach((item) => {
+    params.set(item.param, planningSettingValue(item.param));
+  });
   return params.toString();
 }
 
@@ -223,6 +267,19 @@ function setSubmitState(isLoading) {
   submitButton.disabled = isLoading;
   submitButton.textContent = isLoading ? "Submitting..." : "Submit";
   submitButton.setAttribute("aria-busy", isLoading ? "true" : "false");
+}
+
+function setUploadState(isLoading, message = "") {
+  const uploadButton = document.getElementById("uploadButton");
+  const uploadStatus = document.getElementById("uploadStatus");
+  if (uploadButton) {
+    uploadButton.disabled = isLoading;
+    uploadButton.textContent = isLoading ? "Uploading..." : "Upload Files";
+    uploadButton.setAttribute("aria-busy", isLoading ? "true" : "false");
+  }
+  if (uploadStatus && message) {
+    uploadStatus.textContent = message;
+  }
 }
 
 function renderSourceToggles(sources) {
@@ -239,6 +296,30 @@ function renderSourceToggles(sources) {
     .join("");
 }
 
+function renderUploadTargets(targets) {
+  const select = document.getElementById("uploadKind");
+  if (!select) return;
+  select.innerHTML = targets
+    .map((target) => `<option value="${escapeHtml(target.value)}">${escapeHtml(target.label)}</option>`)
+    .join("");
+}
+
+function renderPlanningDefaults(defaults) {
+  const productForecasts = {};
+  planningInputs.forEach((item) => {
+    const productDefault = (defaults.productOverrides || []).find((override) => override.product === item.product);
+    productForecasts[item.param] = String(productDefault?.default_uplift_pct ?? defaults.default_uplift_pct ?? 35);
+  });
+  state.planningSettings = {
+    baseline: defaults.baseline || "last_full_month",
+    defaultUpliftPct: String(defaults.default_uplift_pct ?? 35),
+    baselineStart: "",
+    baselineEnd: "",
+    productForecasts,
+    baselineOptions: defaults.baselineOptions || defaultPlanningBaselineOptions,
+  };
+}
+
 function renderMeta(meta) {
   document.getElementById("outputSelect").innerHTML = meta.outputDirs
     .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
@@ -248,6 +329,8 @@ function renderMeta(meta) {
   document.getElementById("orderBucketModeSelect").value = "paid_time";
   document.getElementById("radiusMilesSelect").value = "20";
   renderSourceToggles(meta.availableSources);
+  renderUploadTargets(meta.uploadTargets || []);
+  renderPlanningDefaults(meta.planningDefaults || {});
   syncDateBounds();
   applyDeploymentModeUi();
 }
@@ -263,10 +346,21 @@ function applyDeploymentModeUi() {
   document.getElementById("radiusMilesSelect").disabled = true;
   document.getElementById("targetCity").disabled = true;
   document.getElementById("targetState").disabled = true;
+  document.getElementById("uploadKind").disabled = true;
+  document.getElementById("uploadFiles").disabled = true;
   const submitButton = document.getElementById("applyFiltersButton");
   submitButton.disabled = true;
   submitButton.textContent = "Snapshot mode";
   document.getElementById("refreshButton").textContent = "Reload snapshot";
+  const uploadButton = document.getElementById("uploadButton");
+  if (uploadButton) {
+    uploadButton.disabled = true;
+    uploadButton.textContent = "Upload disabled";
+  }
+  const uploadStatus = document.getElementById("uploadStatus");
+  if (uploadStatus) {
+    uploadStatus.textContent = "Uploads only work in local mode.";
+  }
 }
 
 function kpiCard(card) {
@@ -1156,14 +1250,25 @@ function cohortHeatmapHtml(rows) {
 
 function tableHtml(rows, columns, caption, options = {}) {
   if (!rows.length) return '<div class="empty-state">No rows for the current filters.</div>';
-  const head = columns.map((col) => `<th class="${col.numeric ? "num" : ""}">${escapeHtml(col.label)}</th>`).join("");
+  const head = columns
+    .map((col, index) => {
+      const classes = [col.numeric ? "num" : "", options.stickyFirstColumn && index === 0 ? "sticky-first-col" : ""].filter(Boolean).join(" ");
+      return `<th class="${classes}">${escapeHtml(col.label)}</th>`;
+    })
+    .join("");
   const body = rows
     .map(
       (row) =>
         `<tr>${columns
-          .map((col) => {
+          .map((col, index) => {
             const value = col.format ? col.format(row[col.key]) : escapeHtml(row[col.key]);
-            const classes = [col.numeric ? "num" : "", col.mono ? "mono" : ""].filter(Boolean).join(" ");
+            const classes = [
+              col.numeric ? "num" : "",
+              col.mono ? "mono" : "",
+              options.stickyFirstColumn && index === 0 ? "sticky-first-col" : "",
+            ]
+              .filter(Boolean)
+              .join(" ");
             return `<td class="${classes}">${value}</td>`;
           })
           .join("")}</tr>`,
@@ -1217,6 +1322,104 @@ function metricsStackHtml(items) {
       `,
     )
     .join("")}</div>`;
+}
+
+function planningLabel(product) {
+  return product.replace(" Bomb 2-Pack", "").replace(" Bomb", "");
+}
+
+function syncPlanningStateFromDom(requireCustomDates = false) {
+  const baselineSelect = document.getElementById("planningTabBaselineSelect");
+  const defaultUpliftInput = document.getElementById("planningTabDefaultUplift");
+  const baselineStartInput = document.getElementById("planningTabBaselineStart");
+  const baselineEndInput = document.getElementById("planningTabBaselineEnd");
+
+  if (baselineSelect) state.planningSettings.baseline = baselineSelect.value || "last_full_month";
+  if (defaultUpliftInput) state.planningSettings.defaultUpliftPct = defaultUpliftInput.value || "35";
+  state.planningSettings.baselineStart = baselineStartInput?.value || "";
+  state.planningSettings.baselineEnd = baselineEndInput?.value || "";
+
+  planningInputs.forEach((item) => {
+    const input = document.querySelector(`[data-planning-param="${item.param}"]`);
+    state.planningSettings.productForecasts[item.param] = input?.value || state.planningSettings.defaultUpliftPct || "35";
+  });
+
+  if (requireCustomDates && state.planningSettings.baseline === "custom_range") {
+    if (!state.planningSettings.baselineStart || !state.planningSettings.baselineEnd) {
+      state.planningMessage = "Choose both baseline dates before applying custom range.";
+      renderWorkspace();
+      return false;
+    }
+  }
+
+  state.planningMessage = "";
+  return true;
+}
+
+function planningControlsHtml(payload) {
+  const config = payload.planningConfig || {};
+  const baselineOptions = state.planningSettings.baselineOptions.length
+    ? state.planningSettings.baselineOptions
+    : config.baselineOptions || defaultPlanningBaselineOptions;
+  const disabled = staticModeEnabled() ? "disabled" : "";
+  const customRangeVisible = state.planningSettings.baseline === "custom_range";
+  return `
+    <div class="filter-group planning-panel">
+      <div class="group-title">Demand Planning Inputs</div>
+      <div class="control-grid control-grid-planning">
+        <label class="field">
+          <span>Forecast Baseline</span>
+          <select id="planningTabBaselineSelect" ${disabled}>
+            ${baselineOptions
+              .map(
+                (option) =>
+                  `<option value="${escapeHtml(option.value)}" ${state.planningSettings.baseline === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`,
+              )
+              .join("")}
+          </select>
+        </label>
+        <label class="field">
+          <span>Default Increase %</span>
+          <input id="planningTabDefaultUplift" type="number" step="0.1" min="-100" value="${escapeHtml(state.planningSettings.defaultUpliftPct || "35")}" ${disabled}>
+        </label>
+        <div class="field field-wide planning-note">
+          <span>How It Works</span>
+          <div>Use the main date range as the planning horizon. Pick a baseline mode here, and if you choose custom range, set the baseline dates below.</div>
+        </div>
+        <label class="field ${customRangeVisible ? "" : "field-hidden"}">
+          <span>Baseline Start</span>
+          <input id="planningTabBaselineStart" type="date" value="${escapeHtml(state.planningSettings.baselineStart || "")}" ${disabled}>
+        </label>
+        <label class="field ${customRangeVisible ? "" : "field-hidden"}">
+          <span>Baseline End</span>
+          <input id="planningTabBaselineEnd" type="date" value="${escapeHtml(state.planningSettings.baselineEnd || "")}" ${disabled}>
+        </label>
+        ${planningInputs
+          .map(
+            (item) => `
+              <label class="field">
+                <span>${escapeHtml(planningLabel(item.product))} %</span>
+                <input
+                  id="planning-${escapeHtml(item.param)}"
+                  data-planning-param="${escapeHtml(item.param)}"
+                  type="number"
+                  step="0.1"
+                  min="-100"
+                  value="${escapeHtml(planningSettingValue(item.param))}"
+                  ${disabled}
+                >
+              </label>
+            `,
+          )
+          .join("")}
+      </div>
+      <div class="table-toolbar">
+        <div class="table-caption">Update the forecast inputs here, then recalculate the planning table below.</div>
+        <button id="applyPlanningButton" class="button button-secondary" type="button" ${disabled}>Apply Planning</button>
+      </div>
+      ${state.planningMessage ? `<div class="planning-message">${escapeHtml(state.planningMessage)}</div>` : ""}
+    </div>
+  `;
 }
 
 function renderSharedTable(tabKey, payload) {
@@ -1313,24 +1516,36 @@ function renderSharedTable(tabKey, payload) {
   }
 
   if (tabKey === "planning") {
-    return tableHtml(
+    return `${planningControlsHtml(payload)}${tableHtml(
       payload.inventoryPlanningRows,
       [
         { key: "product", label: "Product" },
         { key: "snapshot_date", label: "Snapshot Date", format: fmtDate, mono: true },
+        { key: "baseline_label", label: "Baseline", mono: true },
+        { key: "baseline_start", label: "Baseline Start", format: fmtDate, mono: true },
+        { key: "baseline_end", label: "Baseline End", format: fmtDate, mono: true },
         { key: "on_hand", label: "On Hand", format: fmtNumber, numeric: true, mono: true },
         { key: "in_transit", label: "In Transit", format: fmtNumber, numeric: true, mono: true },
-        { key: "total_supply", label: "Total Supply", format: fmtNumber, numeric: true, mono: true },
-        { key: "units_sold_in_window", label: "Units Sold", format: fmtNumber, numeric: true, mono: true },
+        { key: "counted_in_transit", label: "In Transit Counted", format: fmtNumber, numeric: true, mono: true },
+        { key: "effective_total_supply", label: "Usable Supply", format: fmtNumber, numeric: true, mono: true },
+        { key: "units_sold_in_window", label: "Baseline Units", format: fmtNumber, numeric: true, mono: true },
         { key: "avg_daily_demand", label: "Avg Daily Demand", format: (value) => (value == null ? "N/A" : Number(value).toFixed(2)), numeric: true, mono: true },
+        { key: "forecast_uplift_pct", label: "Forecast %", format: (value) => (value == null ? "N/A" : `${Number(value).toFixed(1)}%`), numeric: true, mono: true },
+        { key: "forecast_daily_demand", label: "Forecast Daily", format: (value) => (value == null ? "N/A" : Number(value).toFixed(2)), numeric: true, mono: true },
+        { key: "forecast_units_in_horizon", label: "Forecast Horizon Units", format: fmtNumber, numeric: true, mono: true },
+        { key: "safety_stock_weeks", label: "Safety Weeks", format: fmtNumber, numeric: true, mono: true },
+        { key: "safety_stock_units", label: "Safety Units", format: fmtNumber, numeric: true, mono: true },
         { key: "weeks_on_hand", label: "Weeks On Hand", format: (value) => (value == null ? "N/A" : Number(value).toFixed(1)), numeric: true, mono: true },
         { key: "weeks_total_supply", label: "Weeks Total", format: (value) => (value == null ? "N/A" : Number(value).toFixed(1)), numeric: true, mono: true },
+        { key: "projected_in_transit_arrival_date", label: "Transit ETA", format: fmtDate, mono: true },
         { key: "projected_stockout_date", label: "Projected Stockout", format: fmtDate, mono: true },
+        { key: "reorder_date", label: "Reorder Date", format: fmtDate, mono: true },
+        { key: "reorder_quantity", label: "Reorder Qty", format: fmtNumber, numeric: true, mono: true },
         { key: "status", label: "Status" },
       ],
-      "Demand planning from the live TikTok inventory sheet and selected demand window",
-      { compact: true },
-    );
+      "Demand planning from inventory, selected planning horizon, and forecast uplift by product",
+      { compact: true, stickyFirstColumn: true },
+    )}`;
   }
 
   if (tabKey === "inventory-history") {
@@ -1720,6 +1935,8 @@ function renderWorkspaceWithTable(workspaceKey, payload) {
     const planningRows = payload.inventoryPlanningRows || [];
     const urgentRows = planningRows.filter((row) => row.status === "Urgent");
     const watchRows = planningRows.filter((row) => row.status === "Watch");
+    const topReorderRow = [...planningRows].sort((a, b) => (b.reorder_quantity || 0) - (a.reorder_quantity || 0))[0];
+    const planningConfig = payload.planningConfig || {};
     introPanels = `
       <div class="overview-grid">
           ${chartPanelHtml("products-physical", "Products sent to TikTok", "Physical unit ranking after bundle expansion.", payload.cogsSummaryRows.slice(0, 10), "product", "component_units_sold", fmtNumber, "Products")}
@@ -1750,12 +1967,12 @@ function renderWorkspaceWithTable(workspaceKey, payload) {
         )}
         ${panelHtml(
           "Planning signal",
-          "Coverage is based on selected-window demand against the latest valid inventory row.",
+          "Coverage uses the chosen baseline, forecast uplift, safety stock, and conservative lead time.",
           metricsStackHtml([
-            { label: "Birria total supply", value: fmtNumber(inventorySnapshot.products?.Birria?.total_supply) },
-            { label: "Pozole Verde on hand", value: fmtNumber(inventorySnapshot.products?.["Pozole Verde"]?.on_hand) },
-            { label: "Top urgent SKU", value: urgentRows[0]?.product || "None" },
-            { label: "Planning table", value: "Open Products > Planning" },
+            { label: "Forecast baseline", value: planningConfig.baselineLabel || "Last Full Month" },
+            { label: "Baseline window", value: planningConfig.baselineStart && planningConfig.baselineEnd ? `${planningConfig.baselineStart} to ${planningConfig.baselineEnd}` : "N/A" },
+            { label: "Top reorder product", value: topReorderRow?.product || "None" },
+            { label: "Top reorder qty", value: fmtNumber(topReorderRow?.reorder_quantity) },
           ]),
           "Planning",
         )}
@@ -1864,6 +2081,35 @@ function renderWorkspace() {
       renderWorkspace();
     });
   });
+
+  const applyPlanningButton = document.getElementById("applyPlanningButton");
+  if (applyPlanningButton) {
+    const baselineSelect = document.getElementById("planningTabBaselineSelect");
+    if (baselineSelect) {
+      baselineSelect.addEventListener("change", () => {
+        state.planningSettings.baseline = baselineSelect.value || "last_full_month";
+        state.planningMessage = "";
+        if (state.planningSettings.baseline === "custom_range") {
+          renderWorkspace();
+          return;
+        }
+        if (syncPlanningStateFromDom(false)) {
+          loadDashboard();
+        }
+      });
+    }
+
+    const applyPlanning = () => {
+      if (syncPlanningStateFromDom(true)) loadDashboard();
+    };
+
+    applyPlanningButton.addEventListener("click", applyPlanning);
+    document.querySelectorAll("#planningTabBaselineSelect, #planningTabBaselineStart, #planningTabBaselineEnd, #planningTabDefaultUplift, [data-planning-param]").forEach((input) => {
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") applyPlanning();
+      });
+    });
+  }
 }
 
 function renderWorkspaceNav() {
@@ -1876,6 +2122,16 @@ async function loadDashboard() {
   try {
     const payload = await fetchJson(dashboardUrl());
     state.payload = payload;
+    state.planningSettings.baseline = payload.summary?.planning_baseline || state.planningSettings.baseline;
+    state.planningSettings.baselineStart = payload.summary?.planning_baseline_start || state.planningSettings.baselineStart;
+    state.planningSettings.baselineEnd = payload.summary?.planning_baseline_end || state.planningSettings.baselineEnd;
+    state.planningSettings.defaultUpliftPct = String(payload.summary?.planning_default_uplift ?? state.planningSettings.defaultUpliftPct);
+    (payload.planningConfig?.productForecasts || []).forEach((item) => {
+      const planningInput = planningInputs.find((entry) => entry.product === item.product);
+      if (planningInput) {
+        state.planningSettings.productForecasts[planningInput.param] = String(item.uplift_pct ?? state.planningSettings.defaultUpliftPct);
+      }
+    });
     renderSummary(payload.summary);
     renderWorkspaceNav();
     renderWorkspace();
@@ -1886,6 +2142,32 @@ async function loadDashboard() {
   }
 }
 
+async function uploadFiles() {
+  const fileInput = document.getElementById("uploadFiles");
+  const uploadKind = document.getElementById("uploadKind").value;
+  const files = [...(fileInput?.files || [])];
+  if (!files.length) {
+    setUploadState(false, "Choose at least one file first.");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.set("upload_kind", uploadKind);
+  files.forEach((file) => formData.append("files", file));
+
+  setUploadState(true, `Uploading ${files.length} file(s)...`);
+  try {
+    const result = await postForm("/api/upload", formData);
+    fileInput.value = "";
+    state.meta = await fetchJson(metaUrl());
+    renderMeta(state.meta);
+    await loadDashboard();
+    setUploadState(false, result.message || "Upload complete.");
+  } catch (error) {
+    setUploadState(false, error.message);
+  }
+}
+
 async function init() {
   state.deploymentMode = resolveDeploymentMode();
   state.meta = await fetchJson(metaUrl());
@@ -1893,9 +2175,13 @@ async function init() {
   document.getElementById("dateBasisSelect").addEventListener("change", () => {
     syncDateBounds();
   });
-  const applyDashboardFilters = () => loadDashboard();
+  const applyDashboardFilters = () => {
+    syncPlanningStateFromDom(false);
+    loadDashboard();
+  };
   document.getElementById("applyFiltersButton").addEventListener("click", applyDashboardFilters);
   document.getElementById("refreshButton").addEventListener("click", loadDashboard);
+  document.getElementById("uploadButton").addEventListener("click", uploadFiles);
   ["startDate", "endDate", "targetZip", "targetCity", "targetState"].forEach((id) => {
     document.getElementById(id).addEventListener("keydown", (event) => {
       if (event.key === "Enter") applyDashboardFilters();
