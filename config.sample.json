@@ -1,0 +1,54 @@
+{
+  "input_paths": [],
+  "exclude_globs": [
+    "**/analysis_output/**",
+    "**/kpi_summary.csv",
+    "**/kpi_full.csv",
+    "**/daily_breakdown.csv",
+    "**/product_kpis.csv",
+    "**/report.md"
+  ],
+  "prefer_folder": "All orders",
+  "include_auxiliary_folders": false,
+  "auxiliary_folder_names": [
+    "Samples",
+    "Replacements"
+  ],
+  "output_dir": "analysis_output",
+  "column_overrides": {
+    "order_id": "",
+    "order_status": "",
+    "order_substatus": "",
+    "cancel_return_type": "",
+    "sku_id": "",
+    "seller_sku": "",
+    "product_name": "",
+    "quantity": "",
+    "returned_quantity": "",
+    "sku_subtotal_before_discount": "",
+    "sku_subtotal_after_discount": "",
+    "order_amount": "",
+    "order_refund_amount": "",
+    "created_time": "",
+    "paid_time": "",
+    "shipped_time": "",
+    "delivered_time": "",
+    "cancelled_time": "",
+    "buyer_username": "",
+    "buyer_nickname": "",
+    "recipient": ""
+  },
+  "kpi": {
+    "report_date_basis": "paid_time",
+    "fallback_date_basis": [
+      "created_time",
+      "shipped_time",
+      "delivered_time"
+    ],
+    "customer_id_priority": [
+      "buyer_username",
+      "buyer_nickname",
+      "recipient"
+    ]
+  }
+}

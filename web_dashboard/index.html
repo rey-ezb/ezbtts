@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>EZ Bombs TikTok Dashboard</title>
+    <link rel="stylesheet" href="./styles.css?v=20260414-3">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow">EZ Bombs TikTok Shop</div>
+          <h1>Commerce operating dashboard</h1>
+          <p class="hero-subtitle">Orders, statements, products, customers, and geography in one working surface.</p>
+        </div>
+        <div class="hero-actions">
+          <button id="refreshButton" class="button button-primary">Refresh data</button>
+        </div>
+      </header>
+
+      <section class="command-center">
+        <div class="filter-group">
+          <div class="group-title">Core Filters</div>
+          <div class="control-grid">
+            <label class="field">
+              <span>Output</span>
+              <select id="outputSelect"></select>
+            </label>
+            <label class="field">
+              <span>Date Basis</span>
+              <select id="dateBasisSelect">
+                <option value="order">Order Date</option>
+                <option value="statement">Statement Date</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Order Bucket</span>
+              <select id="orderBucketModeSelect">
+                <option value="paid_time">Paid Time</option>
+                <option value="file_month">Raw Export File Month</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Start</span>
+              <input id="startDate" type="date">
+            </label>
+            <label class="field">
+              <span>End</span>
+              <input id="endDate" type="date">
+            </label>
+            <div class="field field-submit">
+              <span>&nbsp;</span>
+              <button id="applyFiltersButton" class="button button-secondary button-inline">Submit</button>
+            </div>
+            <div class="field field-wide">
+              <span>Sources</span>
+              <div id="sourceToggles" class="toggle-row"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="filter-group">
+          <div class="group-title">Location Targeting</div>
+          <div class="control-grid control-grid-targeting">
+            <label class="field">
+              <span>Target ZIP</span>
+              <input id="targetZip" type="text" inputmode="numeric" maxlength="5" placeholder="e.g. 77494">
+            </label>
+            <label class="field">
+              <span>Radius Miles</span>
+              <select id="radiusMilesSelect">
+                <option value="10">10 miles</option>
+                <option value="20" selected>20 miles</option>
+                <option value="25">25 miles</option>
+                <option value="50">50 miles</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Target City</span>
+              <input id="targetCity" type="text" placeholder="e.g. Houston">
+            </label>
+            <label class="field">
+              <span>Target State</span>
+              <input id="targetState" type="text" maxlength="2" placeholder="e.g. TX">
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section id="summaryMeta" class="summary-strip"></section>
+      <section id="dataQualityBanner" class="stat-banner"></section>
+      <section id="kpiGrid" class="kpi-grid"></section>
+      <section id="kpiDetail" class="summary-detail"></section>
+
+      <nav id="workspaceNav" class="workspace-nav"></nav>
+      <main id="workspaceContent" class="workspace-content"></main>
+    </div>
+
+    <script src="./app.js?v=20260414-5"></script>
+  </body>
+</html>

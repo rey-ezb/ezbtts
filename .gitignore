@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Local env and editor noise
+.env
+.env.*
+.venv/
+venv/
+
+# Runtime logs
+*.log
+*.out
+*.err
+
+# Local caches
+*.pkl
+
+# Generated analysis output
+analysis_output/
+analysis_output_test/
+analysis_output_test2/
+
+# Local raw exports and finance workbooks
+Ads Spend/
+All orders/
+Finance Tab/
+Replacements/
+Samples/
+
+# Temporary local folder
+~/
