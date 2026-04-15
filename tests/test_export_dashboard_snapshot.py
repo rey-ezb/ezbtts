@@ -11,6 +11,7 @@ from deployment.export_dashboard_snapshot import (
     build_static_meta,
     build_static_payload,
     export_snapshot,
+    split_payload_into_chunks,
 )
 
 
@@ -35,6 +36,35 @@ class ExportDashboardSnapshotTests(unittest.TestCase):
         self.assertEqual(static_payload["summary"]["deployment_mode"], "static")
         self.assertEqual(static_payload["snapshotGeneratedAt"], "2026-04-14T12:00:00+00:00")
         self.assertEqual(static_payload["orderSummary"]["orders_paid_orders"], 10)
+
+    def test_split_payload_into_chunks_moves_heavy_rows_into_month_files(self) -> None:
+        payload = {
+            "orderLevelRowsAll": [
+                {"reporting_date": "2026-03-05", "order_id": "1"},
+                {"reporting_date": "2026-04-02", "order_id": "2"},
+            ],
+            "statementRowsAll": [
+                {"statement_date": "2026-03-10", "order_id": "1"},
+            ],
+            "rawProductNameAllRows": [
+                {"reporting_date": "2026-04-02", "product_name": "Birria"},
+            ],
+            "summary": {"deployment_mode": "static"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            chunked = split_payload_into_chunks(payload, Path(tmp_dir))
+
+            self.assertNotIn("orderLevelRowsAll", chunked)
+            self.assertNotIn("statementRowsAll", chunked)
+            self.assertNotIn("rawProductNameAllRows", chunked)
+            self.assertEqual(chunked["chunkManifest"]["orderLevelRowsAll"]["months"], ["2026-03", "2026-04"])
+            self.assertEqual(
+                chunked["chunkManifest"]["orderLevelRowsAll"]["filesByMonth"]["2026-03"],
+                ["chunks/orderLevelRowsAll/2026-03-1.json"],
+            )
+            self.assertTrue((Path(tmp_dir) / "chunks" / "orderLevelRowsAll" / "2026-03-1.json").exists())
+            self.assertTrue((Path(tmp_dir) / "chunks" / "orderLevelRowsAll" / "2026-04-1.json").exists())
 
     def test_build_dashboard_params_uses_default_output_only_when_no_env_is_present(self) -> None:
         meta = {"defaultOutputDir": "analysis_output"}

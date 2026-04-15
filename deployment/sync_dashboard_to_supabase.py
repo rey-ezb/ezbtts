@@ -74,15 +74,19 @@ def load_snapshot_files(target_dir: Path) -> tuple[dict[str, Any], dict[str, Any
     return meta, payload
 
 
+def upload_snapshot_tree(target_dir: Path, bucket: str, prefix: str) -> None:
+    for path in target_dir.rglob("*.json"):
+        object_path = "/".join(part for part in [prefix.strip("/"), path.relative_to(target_dir).as_posix()] if part)
+        upload_storage_file(path, bucket, object_path)
+
+
 def main() -> None:
     target_dir = SNAPSHOT_DIR
     bucket = os.getenv("SUPABASE_STORAGE_BUCKET", "dashboard-snapshots")
     prefix = os.getenv("SUPABASE_STORAGE_PREFIX", "latest")
     meta_path, dashboard_path = export_snapshot(target_dir)
     meta, payload = load_snapshot_files(target_dir)
-
-    upload_storage_file(meta_path, bucket, f"{prefix}/meta.json")
-    upload_storage_file(dashboard_path, bucket, f"{prefix}/dashboard.json")
+    upload_snapshot_tree(target_dir, bucket, prefix)
 
     snapshot_record = build_snapshot_record(meta, payload)
     inserted = insert_rows("dashboard_snapshots", [snapshot_record], return_columns="id,snapshot_label,generated_at")

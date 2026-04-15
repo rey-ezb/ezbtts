@@ -707,6 +707,20 @@ def build_product_daily_view(raw_df: pd.DataFrame) -> pd.DataFrame:
     return grouped
 
 
+def build_order_level_geo_view(order_level_df: pd.DataFrame, zip_reference: pd.DataFrame) -> pd.DataFrame:
+    if order_level_df is None or order_level_df.empty:
+        return pd.DataFrame()
+    working = order_level_df.copy()
+    if zip_reference is not None and not zip_reference.empty:
+        working = working.merge(
+            zip_reference[["zip", "latitude", "longitude"]],
+            left_on="zipcode",
+            right_on="zip",
+            how="left",
+        ).drop(columns=["zip"], errors="ignore")
+    return working
+
+
 def build_raw_product_name_view(raw_df: pd.DataFrame) -> pd.DataFrame:
     if raw_df is None or raw_df.empty:
         return pd.DataFrame()
@@ -721,6 +735,19 @@ def build_raw_product_name_view(raw_df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
     return grouped
+
+
+def build_raw_product_name_rows(raw_df: pd.DataFrame) -> pd.DataFrame:
+    if raw_df is None or raw_df.empty:
+        return pd.DataFrame()
+    working = raw_df.copy()
+    working["reporting_date"] = pd.to_datetime(working.get("reporting_date"), errors="coerce")
+    working["product_name"] = working.get("Product Name", pd.Series("", index=working.index)).astype("string").fillna("").str.strip()
+    working["order_id"] = working.get("Order ID", pd.Series("", index=working.index)).astype("string").fillna("").str.strip()
+    working["source_type"] = working.get("source_type", pd.Series("", index=working.index)).astype("string").fillna("").str.strip()
+    working["units_sold"] = pd.to_numeric(working.get("Quantity", pd.Series(0, index=working.index)), errors="coerce").fillna(0.0)
+    working = working.loc[working["product_name"].ne("")].copy()
+    return working[["reporting_date", "product_name", "order_id", "source_type", "units_sold"]].reset_index(drop=True)
 
 
 def build_math_audit(filtered_operational_df: pd.DataFrame, filtered_product_df: pd.DataFrame, component_cogs_df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -1824,8 +1851,8 @@ def summarize_order_period(filtered_finance: pd.DataFrame) -> dict[str, Any]:
         result["orders_net_product_sales"] = result["orders_gross_product_sales"] - result["orders_seller_discount"] - result["orders_refund_amount"]
     else:
         result["orders_net_product_sales"] = None
-    if result["orders_net_product_sales"] is not None and result["orders_paid_orders"] not in (None, 0):
-        result["orders_aov"] = result["orders_net_product_sales"] / result["orders_paid_orders"]
+    if result["orders_gross_product_sales"] is not None and result["orders_paid_orders"] not in (None, 0):
+        result["orders_aov"] = result["orders_gross_product_sales"] / result["orders_paid_orders"]
     else:
         result["orders_aov"] = None
     return result
@@ -1962,16 +1989,62 @@ def valid_customer_orders(raw_df: pd.DataFrame) -> pd.DataFrame:
     if raw_df is None or raw_df.empty or "customer_id" not in raw_df.columns:
         return pd.DataFrame()
     working = raw_df.loc[~raw_df["is_canceled"].fillna(False)].copy()
+    if "customer_id_source" not in working.columns:
+        working["customer_id_source"] = ""
     working = working.loc[working["customer_id"].astype("string").str.strip().ne("")]
     if working.empty:
         return pd.DataFrame()
     order_level = (
         working.sort_values("reporting_date")
         .groupby("Order ID", as_index=False)
-        .agg(customer_id=("customer_id", "first"), reporting_date=("reporting_date", "min"), source_type=("source_type", "first"))
+        .agg(
+            customer_id=("customer_id", "first"),
+            customer_id_source=("customer_id_source", "first"),
+            reporting_date=("reporting_date", "min"),
+            source_type=("source_type", "first"),
+        )
     )
     order_level["order_month"] = order_level["reporting_date"].dt.to_period("M").dt.to_timestamp()
     return order_level
+
+
+def customer_proxy_mix(order_level: pd.DataFrame) -> dict[str, Any]:
+    if order_level.empty or "customer_id_source" not in order_level.columns:
+        return {
+            "customer_proxy_username_pct": None,
+            "customer_proxy_nickname_pct": None,
+            "customer_proxy_recipient_pct": None,
+            "customer_proxy_username_count": None,
+            "customer_proxy_nickname_count": None,
+            "customer_proxy_recipient_count": None,
+        }
+    first_selected = (
+        order_level.sort_values("reporting_date")
+        .groupby("customer_id", as_index=False)
+        .agg(customer_id_source=("customer_id_source", "first"))
+    )
+    total = int(first_selected.shape[0])
+    if total == 0:
+        return {
+            "customer_proxy_username_pct": None,
+            "customer_proxy_nickname_pct": None,
+            "customer_proxy_recipient_pct": None,
+            "customer_proxy_username_count": None,
+            "customer_proxy_nickname_count": None,
+            "customer_proxy_recipient_count": None,
+        }
+    source_counts = first_selected["customer_id_source"].value_counts()
+    username_count = int(source_counts.get("Buyer Username", 0))
+    nickname_count = int(source_counts.get("Buyer Nickname", 0))
+    recipient_count = int(source_counts.get("Recipient", 0))
+    return {
+        "customer_proxy_username_pct": username_count / total,
+        "customer_proxy_nickname_pct": nickname_count / total,
+        "customer_proxy_recipient_pct": recipient_count / total,
+        "customer_proxy_username_count": username_count,
+        "customer_proxy_nickname_count": nickname_count,
+        "customer_proxy_recipient_count": recipient_count,
+    }
 
 
 def build_customer_metrics(raw_df: pd.DataFrame, full_history_df: pd.DataFrame | None = None) -> dict[str, Any]:
@@ -1986,10 +2059,11 @@ def build_customer_metrics(raw_df: pd.DataFrame, full_history_df: pd.DataFrame |
             "selected_repeat_customer_rate": None,
             "selected_first_time_buyer_rate": None,
             "customer_id_basis": "Buyer Username -> Buyer Nickname -> Recipient",
+            **customer_proxy_mix(order_level),
         }
     customer_counts = order_level["customer_id"].value_counts()
     unique_customers = int(customer_counts.shape[0])
-    repeat_customers = int((customer_counts > 1).sum())
+    repeat_customers = None
     first_time_buyers = None
     returning_customers = None
     if not full_order_level.empty:
@@ -2000,8 +2074,10 @@ def build_customer_metrics(raw_df: pd.DataFrame, full_history_df: pd.DataFrame |
         )
         joined = selected_customer_span.merge(first_order_dates, on="customer_id", how="left")
         joined["is_first_time_buyer"] = joined["first_order_date"].eq(joined["first_selected_date"])
+        joined["is_repeat_customer"] = joined["first_order_date"].lt(joined["first_selected_date"])
         first_time_buyers = int(joined["is_first_time_buyer"].sum())
-        returning_customers = int((~joined["is_first_time_buyer"]).sum())
+        repeat_customers = int(joined["is_repeat_customer"].sum())
+        returning_customers = repeat_customers
     return {
         "selected_unique_customers": unique_customers,
         "selected_repeat_customers": repeat_customers,
@@ -2010,7 +2086,20 @@ def build_customer_metrics(raw_df: pd.DataFrame, full_history_df: pd.DataFrame |
         "selected_repeat_customer_rate": (repeat_customers / unique_customers) if unique_customers else None,
         "selected_first_time_buyer_rate": (first_time_buyers / unique_customers) if unique_customers and first_time_buyers is not None else None,
         "customer_id_basis": "Buyer Username -> Buyer Nickname -> Recipient",
+        **customer_proxy_mix(order_level),
     }
+
+
+def build_customer_first_order_rows(raw_df: pd.DataFrame) -> pd.DataFrame:
+    order_level = valid_customer_orders(raw_df)
+    if order_level.empty:
+        return pd.DataFrame()
+    return (
+        order_level.groupby("customer_id", as_index=False)
+        .agg(first_order_date=("reporting_date", "min"))
+        .sort_values("first_order_date")
+        .reset_index(drop=True)
+    )
 
 
 def build_cohort_retention(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -2165,9 +2254,18 @@ def upgrade_cached_operational(raw_operational: pd.DataFrame) -> pd.DataFrame:
     if "customer_id" not in working.columns:
         customer_priority = [col for col in ["Buyer Username", "Buyer Nickname", "Recipient"] if col in working.columns]
         if customer_priority:
-            working["customer_id"] = working[customer_priority].replace("", pd.NA).bfill(axis=1).iloc[:, 0].fillna("").astype("string")
+            customer_id = pd.Series("", index=working.index, dtype="string")
+            customer_id_source = pd.Series("", index=working.index, dtype="string")
+            for col in customer_priority:
+                values = working[col].astype("string").fillna("").str.strip()
+                use_mask = customer_id.str.len().eq(0) & values.str.len().gt(0)
+                customer_id = customer_id.mask(use_mask, values)
+                customer_id_source = customer_id_source.mask(use_mask, col)
+            working["customer_id"] = customer_id
+            working["customer_id_source"] = customer_id_source
         else:
             working["customer_id"] = ""
+            working["customer_id_source"] = ""
 
     if "order_created_date" in working.columns:
         working["order_created_date"] = pd.to_datetime(working["order_created_date"], errors="coerce")
@@ -2461,9 +2559,18 @@ def load_paid_time_operational() -> pd.DataFrame:
     df["is_virtual_bundle_listing"] = df.get("Virtual Bundle Seller SKU", pd.Series("", index=df.index)).astype("string").str.len().gt(0)
     customer_priority = [col for col in ["Buyer Username", "Buyer Nickname", "Recipient"] if col in df.columns]
     if customer_priority:
-        df["customer_id"] = df[customer_priority].replace("", pd.NA).bfill(axis=1).iloc[:, 0].fillna("").astype("string")
+        customer_id = pd.Series("", index=df.index, dtype="string")
+        customer_id_source = pd.Series("", index=df.index, dtype="string")
+        for col in customer_priority:
+            values = df[col].astype("string").fillna("").str.strip()
+            use_mask = customer_id.str.len().eq(0) & values.str.len().gt(0)
+            customer_id = customer_id.mask(use_mask, values)
+            customer_id_source = customer_id_source.mask(use_mask, col)
+        df["customer_id"] = customer_id
+        df["customer_id_source"] = customer_id_source
     else:
         df["customer_id"] = ""
+        df["customer_id_source"] = ""
     return df.reset_index(drop=True)
 
 
@@ -2565,6 +2672,7 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
     kpi_full_df = output_data["kpi_full"]
     report_md = output_data["report_md"]
     statement_rows = load_statement_rows(start_date, end_date)
+    statement_rows_all = load_statement_rows()
     filtered_statement_rows = (
         statement_rows.loc[statement_rows["statement_date"].between(start_date, end_date)].copy()
         if statement_rows is not None and not statement_rows.empty
@@ -2610,11 +2718,13 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
     expense_structure_df, expense_structure_detail_df = build_statement_expense_structure(filtered_statement_rows)
     data_quality_summary = build_data_quality_summary(filtered_operational_df, order_bucket_mode)
     raw_product_name_df = build_raw_product_name_view(filtered_operational_df)
+    raw_product_name_all_df = build_raw_product_name_rows(selected_source_operational_df)
     filtered_product_df = build_filtered_product_view(filtered_operational_df)
     planning_product_df = build_filtered_product_view(planning_operational_df)
     filtered_status_df = build_filtered_status_view(filtered_operational_df)
     listing_cogs_df, component_cogs_df = build_cogs_views(filtered_product_df)
     _planning_listing_cogs_df, planning_component_cogs_df = build_cogs_views(planning_product_df)
+    customer_first_order_df = build_customer_first_order_rows(selected_source_operational_df)
     inventory_history_df = load_tiktok_inventory_history()
     inventory_snapshot = latest_tiktok_inventory_snapshot(inventory_history_df)
     inventory_planning_df = build_inventory_planning_rows(
@@ -2648,6 +2758,7 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
     order_daily_df = build_order_daily_table(filtered_finance_df, filtered_operational_df)
     statement_daily_df = build_statement_daily_table(filtered_statement_rows)
     product_daily_df = build_product_daily_view(filtered_operational_df)
+    order_level_geo_df = build_order_level_geo_view(order_level_df, store.zip_reference)
 
     summary = {
         "start_date": start_date.strftime("%Y-%m-%d"),
@@ -2687,10 +2798,14 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
         "dataQualitySummary": {key: json_safe(value) for key, value in data_quality_summary.items()},
         "orderDailyRows": records(order_daily_df.sort_values("reporting_date", ascending=False)),
         "statementDailyRows": records(statement_daily_df.sort_values("reporting_date", ascending=False)),
+        "statementRowsAll": records(statement_rows_all.sort_values("statement_date", ascending=False)),
         "statusRows": records(filtered_status_df),
         "rawProductNameRows": records(raw_product_name_df.head(100)),
+        "rawProductNameAllRows": records(raw_product_name_all_df.sort_values("reporting_date", ascending=False)),
         "productRows": records(filtered_product_df.head(50)),
         "productDailyRows": records(product_daily_df),
+        "orderLevelRowsAll": records(order_level_geo_df.sort_values("reporting_date", ascending=False)),
+        "customerFirstOrderAllRows": records(customer_first_order_df.sort_values("first_order_date", ascending=False)),
         "cogsSummaryRows": records(component_cogs_df),
         "cogsListingRows": records(listing_cogs_df.head(50)),
         "inventoryHistoryRows": records(inventory_history_df.sort_values("date", ascending=False).head(365)),
@@ -2715,6 +2830,7 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
         "targetCitySummary": {key: json_safe(value) for key, value in location_views["target_city_summary"].items()},
         "cohortHeatmap": cohort_heatmap_payload,
         "cohortSummaryRows": records(cohort_summary),
+        "cohortSummaryAllRows": records(cohort_summary_all),
         "kpiDefinitionRows": kpi_rows,
         "reportMarkdown": report_md,
         "selectedOutputDir": output_data["directory"],

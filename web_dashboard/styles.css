@@ -798,6 +798,11 @@ input:focus,
   min-width: 0;
 }
 
+.chart-share {
+  color: var(--muted);
+  font-weight: 500;
+}
+
 .metrics-stack {
   display: grid;
   gap: 10px;
