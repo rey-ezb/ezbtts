@@ -1688,6 +1688,7 @@ def build_location_views(
     radius_miles: int,
     target_city: str,
     target_state: str,
+    city_radius_miles: int | None = None,
 ) -> dict[str, pd.DataFrame | dict[str, Any]]:
     if order_level_df is None or order_level_df.empty:
         empty = pd.DataFrame()
@@ -1697,7 +1698,7 @@ def build_location_views(
             "radius": empty,
             "target_city_rows": empty,
             "radius_summary": {"target_zip": target_zip, "radius_miles": radius_miles, "customers_within_radius": 0, "orders_within_radius": 0, "matched_zip_rows": 0},
-            "target_city_summary": {"target_city": target_city, "target_state": target_state, "customers_in_city": 0, "orders_in_city": 0, "zip_rows_in_city": 0},
+            "target_city_summary": {"target_city": target_city, "target_state": target_state, "city_radius_miles": city_radius_miles or radius_miles, "customers_in_city": 0, "orders_in_city": 0, "zip_rows_in_city": 0},
         }
 
     valid_customers = order_level_df.loc[order_level_df["customer_id"].astype("string").str.strip().ne("")].copy()
@@ -1719,6 +1720,7 @@ def build_location_views(
     city_target_summary = {
         "target_city": target_city.strip() if isinstance(target_city, str) else "",
         "target_state": target_state.strip().upper() if isinstance(target_state, str) else "",
+        "city_radius_miles": city_radius_miles or radius_miles,
         "customers_in_city": 0,
         "orders_in_city": 0,
         "zip_rows_in_city": 0,
@@ -1732,16 +1734,41 @@ def build_location_views(
                 city_filtered["state_code"].astype(str).str.strip().str.upper().eq(target_state_clean)
             ].copy()
         if not city_filtered.empty:
-            city_target_rows = (
-                city_filtered.groupby(["zipcode", "city", "state", "state_code"], dropna=False, as_index=False)
+            city_zip_rows = (
+                city_filtered.loc[city_filtered["zipcode"].astype(str).str.strip().ne("")]
+                .groupby(["zipcode", "city", "state", "state_code"], dropna=False, as_index=False)
                 .agg(unique_customers=("customer_id", "nunique"), orders=("order_id", "nunique"))
-                .sort_values(["unique_customers", "orders"], ascending=False)
             )
+            city_target_rows = city_zip_rows.copy()
+            city_radius = int(city_radius_miles or radius_miles)
+            if not city_zip_rows.empty and not zip_reference.empty:
+                city_zip_centroids = city_zip_rows.merge(zip_reference, left_on="zipcode", right_on="zip", how="left").drop(columns=["zip"], errors="ignore")
+                city_zip_centroids = city_zip_centroids.dropna(subset=["latitude", "longitude"]).copy()
+                if not city_zip_centroids.empty:
+                    city_lat = float(city_zip_centroids["latitude"].mean())
+                    city_lon = float(city_zip_centroids["longitude"].mean())
+                    customer_zips = zips.merge(zip_reference, left_on="zipcode", right_on="zip", how="left").drop(columns=["zip"], errors="ignore")
+                    customer_zips = customer_zips.dropna(subset=["latitude", "longitude"]).copy()
+                    customer_zips["distance_miles"] = customer_zips.apply(
+                        lambda row: haversine_miles(city_lat, city_lon, float(row["latitude"]), float(row["longitude"])),
+                        axis=1,
+                    )
+                    city_target_rows = customer_zips.loc[customer_zips["distance_miles"].le(city_radius)].sort_values("distance_miles")
+                    city_target_rows["city"] = city_target_rows["zipcode"].map(
+                        city_filtered.groupby("zipcode")["city"].first().to_dict()
+                    ).fillna(city_filtered["city"].iloc[0])
+                    city_target_rows["state"] = city_target_rows["zipcode"].map(
+                        city_filtered.groupby("zipcode")["state"].first().to_dict()
+                    ).fillna(city_filtered["state"].iloc[0] if "state" in city_filtered.columns else "")
+                    city_target_rows["state_code"] = city_target_rows["zipcode"].map(
+                        city_filtered.groupby("zipcode")["state_code"].first().to_dict()
+                    ).fillna(city_filtered["state_code"].iloc[0] if "state_code" in city_filtered.columns else "")
             city_target_summary = {
                 "target_city": city_filtered["city"].iloc[0],
                 "target_state": city_filtered["state_code"].iloc[0] if city_filtered["state_code"].astype(str).str.strip().ne("").any() else normalize_state(target_state),
-                "customers_in_city": int(city_filtered["customer_id"].nunique()),
-                "orders_in_city": int(city_filtered["order_id"].nunique()),
+                "city_radius_miles": city_radius,
+                "customers_in_city": int(city_target_rows["unique_customers"].sum()) if not city_target_rows.empty else 0,
+                "orders_in_city": int(city_target_rows["orders"].sum()) if not city_target_rows.empty else 0,
                 "zip_rows_in_city": int(len(city_target_rows)),
             }
 
@@ -2657,6 +2684,7 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
     radius_miles = int(params.get("radius_miles", ["20"])[0] or 20)
     target_city = params.get("target_city", [""])[0]
     target_state = params.get("target_state", [""])[0]
+    city_radius_miles = int(params.get("city_radius_miles", [str(radius_miles)])[0] or radius_miles)
     planning_baseline = params.get("planning_baseline", ["last_full_month"])[0]
     planning_baseline_start_raw = params.get("planning_baseline_start", [""])[0]
     planning_baseline_end_raw = params.get("planning_baseline_end", [""])[0]
@@ -2752,6 +2780,7 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
         radius_miles,
         target_city,
         target_state,
+        city_radius_miles,
     )
     cohort_heatmap_all, cohort_summary_all = build_cohort_retention(selected_source_operational_df)
     cohort_heatmap, cohort_summary = filter_cohort_window(cohort_summary_all, start_date, end_date)
@@ -2770,6 +2799,7 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
         "radius_miles": radius_miles,
         "target_city": target_city.strip() if isinstance(target_city, str) else "",
         "target_state": target_state.strip().upper() if isinstance(target_state, str) else "",
+        "city_radius_miles": city_radius_miles,
         "planning_baseline": planning_baseline,
         "planning_baseline_start": baseline_start.strftime("%Y-%m-%d"),
         "planning_baseline_end": baseline_end.strftime("%Y-%m-%d"),

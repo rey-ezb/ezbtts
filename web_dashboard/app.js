@@ -570,7 +570,7 @@ function haversineMiles(lat1, lon1, lat2, lon2) {
   return 2 * radius * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function buildLocationViewsFromOrderLevel(orderLevelRows, targetZip, radiusMiles, targetCity, targetState) {
+function buildLocationViewsFromOrderLevel(orderLevelRows, targetZip, radiusMiles, targetCity, targetState, cityRadiusMiles) {
   const validCustomers = (orderLevelRows || []).filter((row) => String(row.customer_id || "").trim());
   const citiesMap = groupBy(validCustomers, (row) => `${String(row.city || "").trim()}||${String(row.state || "").trim()}`);
   const cityRows = [...citiesMap.entries()]
@@ -586,7 +586,7 @@ function buildLocationViewsFromOrderLevel(orderLevelRows, targetZip, radiusMiles
     .sort((a, b) => (b.unique_customers - a.unique_customers) || (b.orders - a.orders))
     .slice(0, 100);
   const zipsMap = groupBy(validCustomers.filter((row) => String(row.zipcode || "").trim()), (row) => String(row.zipcode || "").trim());
-  const zipRows = [...zipsMap.entries()]
+  const allZipRows = [...zipsMap.entries()]
     .map(([zipcode, rows]) => ({
       zipcode,
       unique_customers: new Set(rows.map((row) => row.customer_id)).size,
@@ -594,21 +594,21 @@ function buildLocationViewsFromOrderLevel(orderLevelRows, targetZip, radiusMiles
       latitude: rows.find((row) => row.latitude != null)?.latitude ?? null,
       longitude: rows.find((row) => row.longitude != null)?.longitude ?? null,
     }))
-    .sort((a, b) => (b.unique_customers - a.unique_customers) || (b.orders - a.orders))
-    .slice(0, 100);
+    .sort((a, b) => (b.unique_customers - a.unique_customers) || (b.orders - a.orders));
+  const zipRows = allZipRows.slice(0, 100);
 
   const targetCityClean = String(targetCity || "").trim().toLowerCase();
   const targetStateClean = String(targetState || "").trim().toUpperCase();
   let targetCityRows = [];
-  let targetCitySummary = { target_city: String(targetCity || "").trim(), target_state: targetStateClean, customers_in_city: 0, orders_in_city: 0, zip_rows_in_city: 0 };
+  let targetCitySummary = { target_city: String(targetCity || "").trim(), target_state: targetStateClean, city_radius_miles: Number(cityRadiusMiles || radiusMiles || 0), customers_in_city: 0, orders_in_city: 0, zip_rows_in_city: 0 };
   if (targetCityClean) {
     const cityFiltered = validCustomers.filter((row) => {
       const cityMatch = String(row.city || "").trim().toLowerCase() === targetCityClean;
       const stateMatch = !targetStateClean || String(row.state_code || "").trim().toUpperCase() === targetStateClean;
       return cityMatch && stateMatch;
     });
-    const cityZipMap = groupBy(cityFiltered, (row) => `${String(row.zipcode || "").trim()}||${String(row.city || "").trim()}||${String(row.state || "").trim()}||${String(row.state_code || "").trim()}`);
-    targetCityRows = [...cityZipMap.entries()]
+    const cityZipMap = groupBy(cityFiltered.filter((row) => String(row.zipcode || "").trim()), (row) => `${String(row.zipcode || "").trim()}||${String(row.city || "").trim()}||${String(row.state || "").trim()}||${String(row.state_code || "").trim()}`);
+    const cityZipRows = [...cityZipMap.entries()]
       .map(([key, rows]) => {
         const [zipcode, city, state, state_code] = key.split("||");
         return {
@@ -620,14 +620,30 @@ function buildLocationViewsFromOrderLevel(orderLevelRows, targetZip, radiusMiles
           orders: new Set(rows.map((row) => row.order_id)).size,
         };
       })
-      .sort((a, b) => (b.unique_customers - a.unique_customers) || (b.orders - a.orders))
-      .slice(0, 100);
+      .sort((a, b) => (b.unique_customers - a.unique_customers) || (b.orders - a.orders));
+    targetCityRows = cityZipRows.slice(0, 100);
     if (cityFiltered.length) {
+      const cityRadius = Number(cityRadiusMiles || radiusMiles || 0);
+      const cityZipCentroids = cityZipRows.filter((row) => row.latitude != null && row.longitude != null);
+      if (cityZipCentroids.length) {
+        const centerLat = cityZipCentroids.reduce((sum, row) => sum + Number(row.latitude || 0), 0) / cityZipCentroids.length;
+        const centerLon = cityZipCentroids.reduce((sum, row) => sum + Number(row.longitude || 0), 0) / cityZipCentroids.length;
+        targetCityRows = allZipRows
+          .filter((row) => row.latitude != null && row.longitude != null)
+          .map((row) => ({
+            ...row,
+            distance_miles: haversineMiles(centerLat, centerLon, row.latitude, row.longitude),
+          }))
+          .filter((row) => row.distance_miles <= cityRadius)
+          .sort((a, b) => a.distance_miles - b.distance_miles)
+          .slice(0, 100);
+      }
       targetCitySummary = {
         target_city: cityFiltered[0].city,
         target_state: cityFiltered.find((row) => String(row.state_code || "").trim())?.state_code || targetStateClean,
-        customers_in_city: new Set(cityFiltered.map((row) => row.customer_id)).size,
-        orders_in_city: new Set(cityFiltered.map((row) => row.order_id)).size,
+        city_radius_miles: cityRadius,
+        customers_in_city: targetCityRows.reduce((sum, row) => sum + Number(row.unique_customers || 0), 0),
+        orders_in_city: targetCityRows.reduce((sum, row) => sum + Number(row.orders || 0), 0),
         zip_rows_in_city: targetCityRows.length,
       };
     }
@@ -637,9 +653,9 @@ function buildLocationViewsFromOrderLevel(orderLevelRows, targetZip, radiusMiles
   let radiusSummary = { target_zip: String(targetZip || "").trim(), radius_miles: Number(radiusMiles || 0), customers_within_radius: 0, orders_within_radius: 0, matched_zip_rows: 0 };
   const normalizedTargetZip = String(targetZip || "").replace(/\D/g, "").slice(0, 5);
   if (normalizedTargetZip) {
-    const target = zipRows.find((row) => row.zipcode === normalizedTargetZip && row.latitude != null && row.longitude != null);
+    const target = allZipRows.find((row) => row.zipcode === normalizedTargetZip && row.latitude != null && row.longitude != null);
     if (target) {
-      radiusRows = zipRows
+      radiusRows = allZipRows
         .filter((row) => row.latitude != null && row.longitude != null)
         .map((row) => ({
           ...row,
@@ -814,6 +830,7 @@ async function buildStaticPayload(basePayload) {
   const dateBasis = document.getElementById("dateBasisSelect")?.value || "order";
   const targetZip = document.getElementById("targetZip")?.value || basePayload.summary?.target_zip || "";
   const radiusMiles = document.getElementById("radiusMilesSelect")?.value || basePayload.summary?.radius_miles || 20;
+  const cityRadiusMiles = document.getElementById("cityRadiusMilesSelect")?.value || basePayload.summary?.city_radius_miles || radiusMiles || 20;
   const targetCity = document.getElementById("targetCity")?.value || basePayload.summary?.target_city || "";
   const targetState = document.getElementById("targetState")?.value || basePayload.summary?.target_state || "";
   const [productDailyChunkRows, orderLevelChunkRows, customerFirstOrderChunkRows, statementChunkRows, rawProductNameChunkRows] = await Promise.all([
@@ -841,7 +858,7 @@ async function buildStaticPayload(basePayload) {
   );
   const orderHealthMetrics = buildOrderHealthMetricsFromOrderLevel(filteredOrderLevelRows);
   const statusRows = buildStatusRowsFromOrderLevel(filteredOrderLevelRows);
-  const locationViews = buildLocationViewsFromOrderLevel(filteredOrderLevelRows, targetZip, radiusMiles, targetCity, targetState);
+  const locationViews = buildLocationViewsFromOrderLevel(filteredOrderLevelRows, targetZip, radiusMiles, targetCity, targetState, cityRadiusMiles);
   const cohortSummaryRows = filterCohortSummaryRows(basePayload.cohortSummaryAllRows || [], start, end);
   const cohortHeatmap = buildCohortHeatmap(cohortSummaryRows);
   const reconciliationView = buildReconciliationViewFromRows(orderLevelAllRows, statementChunkRows || [], dateBasis, start, end);
@@ -882,6 +899,7 @@ async function buildStaticPayload(basePayload) {
       radius_miles: Number(radiusMiles || 20),
       target_city: String(targetCity || "").trim(),
       target_state: String(targetState || "").trim().toUpperCase(),
+      city_radius_miles: Number(cityRadiusMiles || radiusMiles || 20),
       planning_baseline: state.planningSettings.baseline,
       planning_baseline_start: planningConfig.baselineStart || null,
       planning_baseline_end: planningConfig.baselineEnd || null,
@@ -1114,6 +1132,7 @@ function buildQuery() {
   params.set("target_city", document.getElementById("targetCity").value.trim());
   params.set("target_state", document.getElementById("targetState").value.trim().toUpperCase());
   params.set("radius_miles", document.getElementById("radiusMilesSelect").value);
+  params.set("city_radius_miles", document.getElementById("cityRadiusMilesSelect").value);
   params.set("planning_baseline", state.planningSettings.baseline || "last_full_month");
   params.set("planning_baseline_start", state.planningSettings.baselineStart || "");
   params.set("planning_baseline_end", state.planningSettings.baselineEnd || "");
@@ -1171,6 +1190,17 @@ function renderUploadTargets(targets) {
     .join("");
 }
 
+function renderTargetingExpanded() {
+  const shell = document.getElementById("targetingBody");
+  const button = document.getElementById("targetingToggle");
+  if (!shell || !button) return;
+  const expanded = !!state.targetingExpanded;
+  shell.classList.toggle("targeting-shell-collapsed", !expanded);
+  button.setAttribute("aria-expanded", expanded ? "true" : "false");
+  const label = button.querySelector(".group-toggle-label");
+  if (label) label.textContent = expanded ? "Hide targeting" : "Show targeting";
+}
+
 function renderPlanningDefaults(defaults) {
   const productForecasts = {};
   planningInputs.forEach((item) => {
@@ -1195,11 +1225,13 @@ function renderMeta(meta) {
   document.getElementById("dateBasisSelect").value = "order";
   document.getElementById("orderBucketModeSelect").value = "paid_time";
   document.getElementById("radiusMilesSelect").value = "20";
+  document.getElementById("cityRadiusMilesSelect").value = "20";
   renderSourceToggles(meta.availableSources);
   renderUploadTargets(meta.uploadTargets || []);
   renderPlanningDefaults(meta.planningDefaults || {});
   syncDateBounds();
   applyDeploymentModeUi();
+  renderTargetingExpanded();
 }
 
 function applyDeploymentModeUi() {
@@ -1264,6 +1296,11 @@ function isDetailExpanded(workspaceKey, subtab) {
     return state.detailExpanded[key];
   }
   return defaultDetailExpanded(workspaceKey, subtab);
+}
+
+function openDetailPanel(workspaceKey, subtab) {
+  if (!workspaceKey || !subtab) return;
+  state.detailExpanded[detailPanelKey(workspaceKey, subtab)] = true;
 }
 
 function detailToggleActionsHtml(workspaceKey, subtab) {
@@ -2577,6 +2614,7 @@ function renderSharedTable(tabKey, payload) {
       <div class="stat-banner">
         ${statChip("Target city", summary.target_city || "N/A", "primary")}
         ${summary.target_state ? statChip("State", summary.target_state, "primary") : ""}
+        ${statChip("Radius", `${summary.city_radius_miles ?? "N/A"} miles`, "primary")}
         ${statChip("Customers", fmtNumber(summary.customers_in_city), "accent")}
         ${statChip("Orders", fmtNumber(summary.orders_in_city), "accent")}
         ${statChip("ZIP rows", fmtNumber(summary.zip_rows_in_city), "muted")}
@@ -2591,7 +2629,7 @@ function renderSharedTable(tabKey, payload) {
         { key: "unique_customers", label: "Unique Customers", format: fmtNumber, numeric: true, mono: true },
         { key: "orders", label: "Orders", format: fmtNumber, numeric: true, mono: true },
       ],
-      "Exact city plus optional state match",
+      "ZIPs within the selected radius of the target city area",
     );
   }
 
@@ -2870,8 +2908,9 @@ function renderWorkspaceWithTable(workspaceKey, payload) {
         ${chartPanelHtml("customers-cities", "Top cities", "Highest customer concentration by city.", payload.cityRows.slice(0, 10), "city", "unique_customers", fmtNumber, "Cities")}
         ${panelHtml(
           "Targeting snapshot",
-          "Exact city and ZIP radius targeting for the selected slice.",
+          "ZIP radius and city-area radius targeting for the selected slice.",
           metricsStackHtml([
+            { label: "Target city radius", value: `${fmtNumber(payload.targetCitySummary?.city_radius_miles)} miles` },
             { label: "Target city customers", value: fmtNumber(payload.targetCitySummary?.customers_in_city) },
             { label: "Target city orders", value: fmtNumber(payload.targetCitySummary?.orders_in_city) },
             { label: "Radius customers", value: fmtNumber(payload.radiusSummary?.customers_within_radius) },
@@ -2938,6 +2977,7 @@ function renderWorkspace() {
   document.querySelectorAll(".workspace-button").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeWorkspace = button.dataset.workspace;
+      openDetailPanel(state.activeWorkspace, state.activeSubtabs[state.activeWorkspace]);
       renderWorkspaceNav();
       renderWorkspace();
     });
@@ -2946,6 +2986,7 @@ function renderWorkspace() {
   document.querySelectorAll(".subtab-button").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeSubtabs[button.dataset.workspace] = button.dataset.subtab;
+      openDetailPanel(button.dataset.workspace, button.dataset.subtab);
       renderWorkspace();
     });
   });
@@ -3075,9 +3116,13 @@ async function init() {
     loadDashboard(staticModeEnabled() ? false : true);
   };
   document.getElementById("applyFiltersButton").addEventListener("click", applyDashboardFilters);
+  document.getElementById("targetingToggle")?.addEventListener("click", () => {
+    state.targetingExpanded = !state.targetingExpanded;
+    renderTargetingExpanded();
+  });
   document.getElementById("refreshButton").addEventListener("click", () => loadDashboard(true));
   document.getElementById("uploadButton").addEventListener("click", uploadFiles);
-  ["startDate", "endDate", "targetZip", "targetCity", "targetState"].forEach((id) => {
+  ["startDate", "endDate", "targetZip", "radiusMilesSelect", "targetCity", "cityRadiusMilesSelect", "targetState"].forEach((id) => {
     document.getElementById(id).addEventListener("keydown", (event) => {
       if (event.key === "Enter") applyDashboardFilters();
     });

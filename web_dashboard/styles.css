@@ -226,6 +226,25 @@ tr {
   color: var(--ink);
 }
 
+.group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.group-toggle-label {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
 .control-grid {
     display: grid;
     grid-template-columns: 1.1fr 0.85fr 0.85fr 0.85fr 0.85fr 1.8fr;
@@ -235,6 +254,46 @@ tr {
 
 .control-grid-targeting {
   grid-template-columns: 0.9fr 0.7fr 1fr 0.7fr;
+}
+
+.targeting-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.targeting-shell-collapsed {
+  display: none;
+}
+
+.targeting-block {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.targeting-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.targeting-note {
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.control-grid-targeting-zip {
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 220px);
+}
+
+.control-grid-targeting-city {
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 220px) minmax(140px, 180px);
 }
 
 .control-grid-planning {
@@ -1084,6 +1143,11 @@ tbody tr:hover td.sticky-first-col {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .control-grid-targeting-zip,
+  .control-grid-targeting-city {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .pie-layout {
     grid-template-columns: 1fr;
   }
@@ -1105,6 +1169,8 @@ tbody tr:hover td.sticky-first-col {
   .detail-meta,
   .control-grid,
   .control-grid-targeting,
+  .control-grid-targeting-zip,
+  .control-grid-targeting-city,
   .control-grid-planning,
   .hero-upload-controls {
     grid-template-columns: 1fr;

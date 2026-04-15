@@ -70,29 +70,53 @@
         </div>
 
         <div class="filter-group">
-          <div class="group-title">Location Targeting</div>
-          <div class="control-grid control-grid-targeting">
-            <label class="field">
-              <span>Target ZIP</span>
-              <input id="targetZip" type="text" inputmode="numeric" maxlength="5" placeholder="e.g. 77494">
-            </label>
-            <label class="field">
-              <span>Radius Miles</span>
-              <select id="radiusMilesSelect">
-                <option value="10">10 miles</option>
-                <option value="20" selected>20 miles</option>
-                <option value="25">25 miles</option>
-                <option value="50">50 miles</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Target City</span>
-              <input id="targetCity" type="text" placeholder="e.g. Houston">
-            </label>
-            <label class="field">
-              <span>Target State</span>
-              <input id="targetState" type="text" maxlength="2" placeholder="e.g. TX">
-            </label>
+          <button id="targetingToggle" class="group-toggle" type="button" aria-expanded="false">
+            <span class="group-title">Location Targeting</span>
+            <span class="group-toggle-label">Show targeting</span>
+          </button>
+          <div id="targetingBody" class="targeting-shell targeting-shell-collapsed">
+            <div class="targeting-block">
+              <div class="targeting-title">ZIP Radius Targeting</div>
+              <div class="targeting-note">Use ZIP plus radius to find customers near a center ZIP. City is not required for this.</div>
+              <div class="control-grid control-grid-targeting-zip">
+                <label class="field">
+                  <span>Center ZIP</span>
+                  <input id="targetZip" type="text" inputmode="numeric" maxlength="5" placeholder="e.g. 89117">
+                </label>
+                <label class="field">
+                  <span>Radius Miles</span>
+                  <select id="radiusMilesSelect">
+                    <option value="10">10 miles</option>
+                    <option value="20" selected>20 miles</option>
+                    <option value="25">25 miles</option>
+                    <option value="50">50 miles</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="targeting-block">
+              <div class="targeting-title">City Targeting</div>
+              <div class="targeting-note">Use city as the base area, then include nearby ZIPs within the selected radius. Add state only when you need to narrow the city.</div>
+              <div class="control-grid control-grid-targeting-city">
+                <label class="field">
+                  <span>Target City</span>
+                  <input id="targetCity" type="text" placeholder="e.g. Las Vegas">
+                </label>
+                <label class="field">
+                  <span>Radius Miles</span>
+                  <select id="cityRadiusMilesSelect">
+                    <option value="10">10 miles</option>
+                    <option value="20" selected>20 miles</option>
+                    <option value="25">25 miles</option>
+                    <option value="50">50 miles</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Target State</span>
+                  <input id="targetState" type="text" maxlength="2" placeholder="e.g. NV">
+                </label>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -108,6 +132,6 @@
     </div>
 
     <script src="./runtime-config.js?v=20260414-2"></script>
-    <script src="./app.js?v=20260414-12"></script>
+    <script src="./app.js?v=20260415-1"></script>
   </body>
 </html>
