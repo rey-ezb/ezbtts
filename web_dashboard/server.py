@@ -1533,78 +1533,93 @@ def build_order_level_view(raw_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+STATEMENT_ROLLUP_NUMERIC_COLUMNS = [
+    "amount",
+    "total_settlement_amount",
+    "statement_net_sales",
+    "statement_gross_sales",
+    "statement_gross_sales_refund",
+    "statement_seller_discount",
+    "statement_seller_discount_refund",
+    "statement_shipping",
+    "statement_tiktok_shipping_fee",
+    "statement_fbt_shipping_fee",
+    "statement_customer_paid_shipping_fee",
+    "statement_customer_paid_shipping_fee_refund",
+    "statement_tiktok_shipping_incentive",
+    "statement_tiktok_shipping_incentive_refund",
+    "statement_shipping_fee_subsidy",
+    "statement_return_shipping_fee",
+    "statement_fbt_fulfillment_fee",
+    "statement_customer_shipping_fee_offset",
+    "statement_shipping_fee_discount",
+    "statement_return_shipping_label_fee",
+    "statement_fbt_fulfillment_fee_reimbursement",
+    "statement_fees",
+    "statement_transaction_fee",
+    "statement_referral_fee",
+    "statement_refund_admin_fee",
+    "statement_affiliate_commission",
+    "statement_affiliate_partner_commission",
+    "statement_affiliate_shop_ads_commission",
+    "statement_affiliate_partner_shop_ads_commission",
+    "statement_tiktok_partner_commission",
+    "statement_cofunded_promotion",
+    "statement_campaign_service_fee",
+    "statement_smart_promotion_fee",
+    "statement_marketing_benefits_package_fee",
+    "statement_adjustment_amount",
+    "statement_logistics_reimbursement",
+    "statement_gmv_deduction_fbt_warehouse_fee",
+    "statement_tiktok_shop_reimbursement",
+    "statement_customer_payment",
+    "statement_customer_refund",
+    "statement_seller_voucher_discount",
+    "statement_seller_voucher_discount_refund",
+    "statement_platform_discounts",
+    "statement_platform_discounts_refund",
+    "statement_sales_tax_payment",
+    "statement_sales_tax_refund",
+    "typed_shipping_fee",
+    "typed_fulfillment_fee",
+    "typed_referral_fee",
+    "typed_affiliate_fee",
+    "typed_marketing_fee",
+    "typed_service_fee",
+    "typed_other_fee",
+]
+
+STATEMENT_ROLLUP_COLUMNS = [
+    "order_id",
+    "first_statement_date",
+    "last_statement_date",
+    "statement_row_count",
+    "statement_amount_total",
+    *[column for column in STATEMENT_ROLLUP_NUMERIC_COLUMNS if column != "amount"],
+]
+
+
+def empty_statement_rollup() -> pd.DataFrame:
+    return pd.DataFrame(columns=STATEMENT_ROLLUP_COLUMNS)
+
+
 def build_statement_rollup(statement_rows: pd.DataFrame) -> pd.DataFrame:
     if statement_rows is None or statement_rows.empty:
-        return pd.DataFrame()
+        return empty_statement_rollup()
     matched = statement_rows.loc[statement_rows["order_id"].astype(str).str.strip().ne("")].copy()
     if matched.empty:
-        return pd.DataFrame()
-    numeric_columns = [
-        "amount",
-        "total_settlement_amount",
-        "statement_net_sales",
-        "statement_gross_sales",
-        "statement_gross_sales_refund",
-        "statement_seller_discount",
-        "statement_seller_discount_refund",
-        "statement_shipping",
-        "statement_tiktok_shipping_fee",
-        "statement_fbt_shipping_fee",
-        "statement_customer_paid_shipping_fee",
-        "statement_customer_paid_shipping_fee_refund",
-        "statement_tiktok_shipping_incentive",
-        "statement_tiktok_shipping_incentive_refund",
-        "statement_shipping_fee_subsidy",
-        "statement_return_shipping_fee",
-        "statement_fbt_fulfillment_fee",
-        "statement_customer_shipping_fee_offset",
-        "statement_shipping_fee_discount",
-        "statement_return_shipping_label_fee",
-        "statement_fbt_fulfillment_fee_reimbursement",
-        "statement_fees",
-        "statement_transaction_fee",
-        "statement_referral_fee",
-        "statement_refund_admin_fee",
-        "statement_affiliate_commission",
-        "statement_affiliate_partner_commission",
-        "statement_affiliate_shop_ads_commission",
-        "statement_affiliate_partner_shop_ads_commission",
-        "statement_tiktok_partner_commission",
-        "statement_cofunded_promotion",
-        "statement_campaign_service_fee",
-        "statement_smart_promotion_fee",
-        "statement_marketing_benefits_package_fee",
-        "statement_adjustment_amount",
-        "statement_logistics_reimbursement",
-        "statement_gmv_deduction_fbt_warehouse_fee",
-        "statement_tiktok_shop_reimbursement",
-        "statement_customer_payment",
-        "statement_customer_refund",
-        "statement_seller_voucher_discount",
-        "statement_seller_voucher_discount_refund",
-        "statement_platform_discounts",
-        "statement_platform_discounts_refund",
-        "statement_sales_tax_payment",
-        "statement_sales_tax_refund",
-        "typed_shipping_fee",
-        "typed_fulfillment_fee",
-        "typed_referral_fee",
-        "typed_affiliate_fee",
-        "typed_marketing_fee",
-        "typed_service_fee",
-        "typed_other_fee",
-    ]
+        return empty_statement_rollup()
     base = (
         matched.groupby("order_id", as_index=False)
         .agg(
             first_statement_date=("statement_date", "min"),
             last_statement_date=("statement_date", "max"),
             statement_row_count=("order_id", "count"),
-            **{column: (column, "sum") for column in numeric_columns},
+            **{column: (column, "sum") for column in STATEMENT_ROLLUP_NUMERIC_COLUMNS},
         )
     )
     base = base.rename(columns={"amount": "statement_amount_total"})
-    return base.fillna(0)
+    return base.reindex(columns=STATEMENT_ROLLUP_COLUMNS).fillna(0)
 
 
 def build_statement_unmatched(statement_rows: pd.DataFrame, order_level_df: pd.DataFrame) -> pd.DataFrame:
