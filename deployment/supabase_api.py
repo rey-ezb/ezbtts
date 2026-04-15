@@ -70,6 +70,48 @@ def insert_rows(table: str, rows: list[dict[str, Any]], *, return_columns: str |
         return json.loads(raw.decode("utf-8")) if raw else []
 
 
+def fetch_rows(table: str, *, query: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    result = rest_request("GET", table, query=query)
+    return result or []
+
+
+def update_rows(table: str, payload: dict[str, Any], *, query: dict[str, str]) -> list[dict[str, Any]]:
+    url = f"{supabase_url()}/rest/v1/{table}"
+    if query:
+        url = f"{url}?{urlencode(query)}"
+    request = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="PATCH",
+        headers={
+            "Authorization": f"Bearer {service_role_key()}",
+            "apikey": service_role_key(),
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        },
+    )
+    with urlopen(request) as response:
+        raw = response.read()
+        return json.loads(raw.decode("utf-8")) if raw else []
+
+
+def delete_rows(table: str, *, query: dict[str, str]) -> None:
+    url = f"{supabase_url()}/rest/v1/{table}"
+    if query:
+        url = f"{url}?{urlencode(query)}"
+    request = Request(
+        url,
+        method="DELETE",
+        headers={
+            "Authorization": f"Bearer {service_role_key()}",
+            "apikey": service_role_key(),
+            "Prefer": "return=minimal",
+        },
+    )
+    with urlopen(request) as response:
+        response.read()
+
+
 def upload_storage_file(file_path: Path, bucket: str, object_path: str) -> None:
     storage_url = f"{supabase_url()}/storage/v1/object/{bucket}/{object_path.lstrip('/')}"
     content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
@@ -86,3 +128,62 @@ def upload_storage_file(file_path: Path, bucket: str, object_path: str) -> None:
     )
     with urlopen(request) as response:
         response.read()
+
+
+def upload_storage_bytes(content: bytes, bucket: str, object_path: str, *, content_type: str = "application/octet-stream") -> None:
+    storage_url = f"{supabase_url()}/storage/v1/object/{bucket}/{object_path.lstrip('/')}"
+    request = Request(
+        storage_url,
+        data=content,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {service_role_key()}",
+            "apikey": service_role_key(),
+            "Content-Type": content_type,
+            "x-upsert": "true",
+        },
+    )
+    with urlopen(request) as response:
+        response.read()
+
+
+def list_storage_objects(bucket: str, prefix: str = "") -> list[dict[str, Any]]:
+    normalized = prefix.strip().strip("/")
+    request = Request(
+        f"{supabase_url()}/storage/v1/object/list/{bucket}",
+        data=json.dumps({"prefix": normalized}).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {service_role_key()}",
+            "apikey": service_role_key(),
+            "Content-Type": "application/json",
+        },
+    )
+    with urlopen(request) as response:
+        raw = response.read()
+        rows = json.loads(raw.decode("utf-8")) if raw else []
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        name = str(row.get("name") or "")
+        if not name:
+            continue
+        object_name = "/".join(part for part in [normalized, name.strip("/")] if part)
+        results.append({**row, "name": object_name})
+    return results
+
+
+def download_storage_file(bucket: str, object_path: str, destination: Path) -> Path:
+    download_url = f"{supabase_url()}/storage/v1/object/{bucket}/{object_path.lstrip('/')}"
+    request = Request(
+        download_url,
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {service_role_key()}",
+            "apikey": service_role_key(),
+        },
+    )
+    with urlopen(request) as response:
+        payload = response.read()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(payload)
+    return destination

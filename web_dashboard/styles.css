@@ -546,12 +546,14 @@ input:focus,
 
 .workspace-content {
   margin-top: 14px;
+  min-width: 0;
 }
 
 .workspace-shell {
   padding: 16px;
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .workspace-header {
@@ -601,7 +603,7 @@ input:focus,
 
 .overview-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
   gap: 16px;
   align-items: start;
 }
@@ -902,13 +904,23 @@ input:focus,
   width: 100%;
 }
 
+.summary-detail .table-wrap {
+  max-width: 100%;
+}
+
 .table-wrap-compact {
   font-size: 0.88rem;
 }
 
-table {
+.data-table {
   width: max-content;
   min-width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+table:not(.data-table) {
+  width: 100%;
   border-collapse: collapse;
   table-layout: auto;
 }
@@ -951,8 +963,8 @@ tbody tr:nth-child(even) {
   background: rgba(248, 251, 255, 0.72);
 }
 
-td:first-child,
-th:first-child {
+.data-table td:first-child,
+.data-table th:first-child {
   white-space: normal;
   overflow-wrap: anywhere;
   min-width: 160px;

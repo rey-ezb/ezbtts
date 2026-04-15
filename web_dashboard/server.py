@@ -3,6 +3,7 @@ from __future__ import annotations
 import cgi
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -12,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 
+from deployment.hosted_uploads import hosted_uploads_enabled, upload_hosted_file
 from web_dashboard.demand_planning import (
     DEFAULT_FORECAST_UPLIFT_PCT,
     FORECAST_PRODUCT_PARAM_MAP,
@@ -26,6 +28,7 @@ from web_dashboard.upload_helpers import UPLOAD_TARGET_FOLDERS, sanitize_upload_
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 WEB_DIR = Path(__file__).resolve().parent
+DATA_ROOT_ENV = "DASHBOARD_DATA_ROOT"
 DEFAULT_OUTPUT_DIR = BASE_DIR / "analysis_output"
 CACHE_FILE = WEB_DIR / ".dashboard_cache.pkl"
 CACHE_SCHEMA_VERSION = 2
@@ -200,6 +203,13 @@ INVENTORY_PRODUCT_KEY_MAP = {
     "Variety Pack": "Variety Pack",
     "Pozole Verde Bomb 2-Pack": "Pozole Verde",
 }
+
+
+def source_base_dir() -> Path:
+    override = os.getenv(DATA_ROOT_ENV)
+    if override:
+        return Path(override).resolve()
+    return BASE_DIR
 
 
 def json_safe(value: Any) -> Any:
@@ -639,6 +649,64 @@ def build_filtered_product_view(raw_df: pd.DataFrame) -> pd.DataFrame:
     return grouped
 
 
+def build_product_daily_view(raw_df: pd.DataFrame) -> pd.DataFrame:
+    if raw_df is None or raw_df.empty:
+        return pd.DataFrame()
+    working = raw_df.copy()
+    working["canonical_item_name"] = working["Product Name"].map(canonical_item_name)
+    working["bundle_units_sold"] = working["Quantity"].where(working["is_virtual_bundle_listing"], 0)
+    if "seller_sku_resolved" not in working.columns:
+        working["seller_sku_resolved"] = working.get("Seller SKU", pd.Series("", index=working.index))
+    grouped = (
+        working.groupby(["reporting_date", "canonical_item_name", "seller_sku_resolved"], dropna=False, as_index=False)
+        .agg(
+            order_count=("Order ID", pd.Series.nunique),
+            units_sold=("Quantity", "sum"),
+            returned_units=("Sku Quantity of return", "sum"),
+            gross_merchandise_sales=("SKU Subtotal Before Discount", "sum"),
+            seller_discount=("SKU Seller Discount", "sum"),
+            platform_discount=("SKU Platform Discount", "sum"),
+            net_merchandise_sales=("SKU Subtotal After Discount", "sum"),
+            virtual_bundle_units=("is_virtual_bundle_listing", "sum"),
+            bundle_units_sold=("bundle_units_sold", "sum"),
+        )
+        .rename(columns={"canonical_item_name": "product_name"})
+        .sort_values(["reporting_date", "net_merchandise_sales"], ascending=[False, False])
+        .reset_index(drop=True)
+    )
+    grouped["return_rate_by_units"] = grouped.apply(
+        lambda row: row["returned_units"] / row["units_sold"] if row["units_sold"] else None,
+        axis=1,
+    )
+    units_by_source = (
+        working.groupby(["reporting_date", "canonical_item_name", "seller_sku_resolved", "source_type"], dropna=False, as_index=False)
+        .agg(source_units=("Quantity", "sum"))
+        .pivot(index=["reporting_date", "canonical_item_name", "seller_sku_resolved"], columns="source_type", values="source_units")
+        .fillna(0)
+        .reset_index()
+        .rename(
+            columns={
+                "canonical_item_name": "product_name",
+                "Sales": "sales_units",
+                "Samples": "sample_units",
+                "Replacements": "replacement_units",
+            }
+        )
+    )
+    for col in ["sales_units", "sample_units", "replacement_units"]:
+        if col not in units_by_source.columns:
+            units_by_source[col] = 0.0
+    grouped = grouped.merge(
+        units_by_source[["reporting_date", "product_name", "seller_sku_resolved", "sales_units", "sample_units", "replacement_units"]],
+        on=["reporting_date", "product_name", "seller_sku_resolved"],
+        how="left",
+    )
+    grouped[["sales_units", "sample_units", "replacement_units"]] = grouped[
+        ["sales_units", "sample_units", "replacement_units"]
+    ].fillna(0)
+    return grouped
+
+
 def build_raw_product_name_view(raw_df: pd.DataFrame) -> pd.DataFrame:
     if raw_df is None or raw_df.empty:
         return pd.DataFrame()
@@ -835,8 +903,9 @@ def build_statement_expense_structure(statement_rows: pd.DataFrame) -> tuple[pd.
 
 def detect_statement_sources() -> list[Path]:
     found: list[Path] = []
+    base_dir = source_base_dir()
     for name in STATEMENT_SOURCE_NAMES:
-        candidate = BASE_DIR / name
+        candidate = base_dir / name
         if candidate.exists():
             if candidate.is_dir():
                 found.extend(sorted(candidate.glob("*.csv")))
@@ -845,7 +914,7 @@ def detect_statement_sources() -> list[Path]:
             else:
                 found.append(candidate)
     for pattern in ["*statement*.csv", "*statement*.xlsx", "*finance*.csv", "*finance*.xlsx"]:
-        found.extend(sorted(BASE_DIR.glob(pattern)))
+        found.extend(sorted(base_dir.glob(pattern)))
     unique: list[Path] = []
     seen: set[Path] = set()
     for path in found:
@@ -2180,8 +2249,9 @@ class DataStore:
 
 def detect_order_source_dirs() -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
+    base_dir = source_base_dir()
     for folder_name, label in ORDER_SOURCE_FOLDERS.items():
-        path = BASE_DIR / folder_name
+        path = base_dir / folder_name
         if path.exists():
             found.append((str(path), label))
     return found
@@ -2577,6 +2647,7 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
     cohort_heatmap, cohort_summary = filter_cohort_window(cohort_summary_all, start_date, end_date)
     order_daily_df = build_order_daily_table(filtered_finance_df, filtered_operational_df)
     statement_daily_df = build_statement_daily_table(filtered_statement_rows)
+    product_daily_df = build_product_daily_view(filtered_operational_df)
 
     summary = {
         "start_date": start_date.strftime("%Y-%m-%d"),
@@ -2619,6 +2690,7 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
         "statusRows": records(filtered_status_df),
         "rawProductNameRows": records(raw_product_name_df.head(100)),
         "productRows": records(filtered_product_df.head(50)),
+        "productDailyRows": records(product_daily_df),
         "cogsSummaryRows": records(component_cogs_df),
         "cogsListingRows": records(listing_cogs_df.head(50)),
         "inventoryHistoryRows": records(inventory_history_df.sort_values("date", ascending=False).head(365)),
@@ -2715,8 +2787,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             },
         )
         upload_kind = form.getfirst("upload_kind", "")
+        use_hosted_uploads = hosted_uploads_enabled()
         try:
-            target_dir = upload_directory_for_kind(BASE_DIR, upload_kind)
+            target_dir = None if use_hosted_uploads else upload_directory_for_kind(BASE_DIR, upload_kind)
         except ValueError as error:
             self.respond_json_error(400, str(error))
             return
@@ -2735,9 +2808,24 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.respond_json_error(400, str(error))
                 return
             payload = field.file.read()
-            destination = target_dir / filename
-            destination.write_bytes(payload)
-            saved_files.append({"filename": filename, "size": len(payload), "folder": target_dir.name})
+            if use_hosted_uploads:
+                try:
+                    uploaded = upload_hosted_file(upload_kind, filename, payload, notes="Uploaded from local dashboard")
+                except Exception as error:  # noqa: BLE001
+                    self.respond_json_error(500, f"Hosted upload failed: {error}")
+                    return
+                saved_files.append(
+                    {
+                        "filename": uploaded.get("original_filename", filename),
+                        "size": uploaded.get("file_size_bytes", len(payload)),
+                        "folder": upload_kind,
+                        "storage_path": uploaded.get("storage_path"),
+                    }
+                )
+            else:
+                destination = target_dir / filename
+                destination.write_bytes(payload)
+                saved_files.append({"filename": filename, "size": len(payload), "folder": target_dir.name})
 
         if not saved_files:
             self.respond_json_error(400, "Choose at least one file to upload.")
@@ -2746,7 +2834,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         global STORE
         STORE = None
         DASHBOARD_RESPONSE_CACHE.clear()
-        self.respond_json({"message": f"Uploaded {len(saved_files)} file(s) to {target_dir.name}.", "savedFiles": saved_files})
+        if use_hosted_uploads:
+            try:
+                from deployment.sync_dashboard_to_supabase import main as sync_dashboard_to_supabase
+
+                sync_dashboard_to_supabase()
+            except Exception as error:  # noqa: BLE001
+                self.respond_json_error(500, f"Hosted rebuild failed after upload: {error}")
+                return
+            self.respond_json(
+                {
+                    "message": f"Uploaded {len(saved_files)} file(s) to hosted storage and rebuilt the dashboard snapshot.",
+                    "savedFiles": saved_files,
+                    "storageMode": "supabase",
+                }
+            )
+            return
+        self.respond_json({"message": f"Uploaded {len(saved_files)} file(s) to {target_dir.name}.", "savedFiles": saved_files, "storageMode": "local"})
 
 
 def main() -> None:

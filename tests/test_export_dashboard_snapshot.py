@@ -63,6 +63,29 @@ class ExportDashboardSnapshotTests(unittest.TestCase):
             self.assertEqual(meta_path.read_text(encoding="utf-8"), '{"existing": true}')
             self.assertEqual(dashboard_path.read_text(encoding="utf-8"), '{"existing": true}')
 
+    def test_export_snapshot_uses_materialized_remote_inputs_before_reusing_existing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_dir = Path(tmp_dir)
+            meta_path = target_dir / "meta.json"
+            dashboard_path = target_dir / "dashboard.json"
+            meta_path.write_text('{"existing": true}', encoding="utf-8")
+            dashboard_path.write_text('{"existing": true}', encoding="utf-8")
+
+            with tempfile.TemporaryDirectory() as staged_dir:
+                with (
+                    patch("deployment.export_dashboard_snapshot.has_local_snapshot_inputs", side_effect=[False, True]),
+                    patch("deployment.export_dashboard_snapshot.materialize_supabase_uploads", return_value=Path(staged_dir)),
+                    patch("deployment.export_dashboard_snapshot.meta_payload", return_value={"defaultOutputDir": "analysis_output"}),
+                    patch("deployment.export_dashboard_snapshot.dashboard_payload", return_value={"summary": {}}),
+                    patch("deployment.export_dashboard_snapshot.write_runtime_config"),
+                ):
+                    result_meta, result_dashboard = export_snapshot(target_dir)
+
+            self.assertEqual(result_meta, meta_path)
+            self.assertEqual(result_dashboard, dashboard_path)
+            self.assertNotEqual(meta_path.read_text(encoding="utf-8"), '{"existing": true}')
+            self.assertNotEqual(dashboard_path.read_text(encoding="utf-8"), '{"existing": true}')
+
     def test_build_runtime_config_defaults_to_local_snapshot_files(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
             config = build_runtime_config()

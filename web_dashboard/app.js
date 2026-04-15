@@ -1,6 +1,7 @@
 const state = {
   meta: null,
   payload: null,
+  basePayload: null,
   deploymentMode: "dynamic",
   activeWorkspace: "orders",
   activeCard: "orders-gross-sales",
@@ -55,6 +56,11 @@ function dashboardUrl() {
   return `/api/dashboard?${buildQuery()}`;
 }
 
+function uploadUrl() {
+  const config = getDashboardConfig();
+  return config.uploadUrl || "/api/upload";
+}
+
 function staticModeEnabled() {
   return state.deploymentMode === "static";
 }
@@ -75,9 +81,360 @@ const defaultPlanningBaselineOptions = [
   { value: "custom_range", label: "Custom Range" },
 ];
 
+const inventoryProductMap = {
+  "Birria Bomb 2-Pack": "Birria",
+  "Pozole Bomb 2-Pack": "Pozole",
+  "Tinga Bomb 2-Pack": "Tinga",
+  "Brine Bomb": "Brine",
+  "Variety Pack": "Variety Pack",
+  "Pozole Verde Bomb 2-Pack": "Pozole Verde",
+};
+
+const cogsMap = {
+  "Birria Bomb 2-Pack": { list_price: 19.99, unit_cogs: 3.15 },
+  "Pozole Bomb 2-Pack": { list_price: 19.99, unit_cogs: 3.35 },
+  "Tinga Bomb 2-Pack": { list_price: 19.99, unit_cogs: 3.45 },
+  "Pozole Verde Bomb 2-Pack": { list_price: 19.99, unit_cogs: 3.75 },
+  "Brine Bomb": { list_price: 19.99, unit_cogs: 4.2 },
+  "Variety Pack": { list_price: 49.99, unit_cogs: 13.35 },
+};
+
+const inboundToFbtLeadDays = 5;
+const reorderLeadDays = 8;
+
 function planningSettingValue(param) {
   const defaultUplift = state.planningSettings.defaultUpliftPct || "35";
   return state.planningSettings.productForecasts[param] || defaultUplift;
+}
+
+function normalizeDateInput(value) {
+  return value ? String(value).slice(0, 10) : "";
+}
+
+function parseDateString(value) {
+  return value ? new Date(`${normalizeDateInput(value)}T00:00:00`) : null;
+}
+
+function ensureDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  return parseDateString(value);
+}
+
+function formatDateString(date) {
+  const normalized = ensureDate(date);
+  if (!normalized || Number.isNaN(normalized.getTime())) return "";
+  return normalized.toISOString().slice(0, 10);
+}
+
+function addDays(date, days) {
+  const normalized = ensureDate(date);
+  if (!normalized || Number.isNaN(normalized.getTime())) return null;
+  const next = new Date(normalized.getTime());
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function daysBetweenInclusive(start, end) {
+  return Math.max(1, Math.round((parseDateString(formatDateString(end)) - parseDateString(formatDateString(start))) / 86400000) + 1);
+}
+
+function inDateRange(value, start, end) {
+  const normalized = normalizeDateInput(value);
+  return Boolean(normalized && normalized >= start && normalized <= end);
+}
+
+function sumField(rows, key) {
+  return rows.reduce((sum, row) => sum + Number(row?.[key] || 0), 0);
+}
+
+function groupBy(rows, keyFactory) {
+  const map = new Map();
+  rows.forEach((row) => {
+    const key = keyFactory(row);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(row);
+  });
+  return map;
+}
+
+function aggregateProductRows(rows) {
+  const grouped = groupBy(rows, (row) => `${row.product_name || ""}||${row.seller_sku_resolved || ""}`);
+  return [...grouped.entries()]
+    .map(([groupKey, productRows]) => {
+      const [product_name, seller_sku_resolved] = groupKey.split("||");
+      const units_sold = sumField(productRows, "units_sold");
+      const returned_units = sumField(productRows, "returned_units");
+      return {
+        product_name,
+        seller_sku_resolved,
+        order_count: sumField(productRows, "order_count"),
+        units_sold,
+        returned_units,
+        gross_merchandise_sales: sumField(productRows, "gross_merchandise_sales"),
+        seller_discount: sumField(productRows, "seller_discount"),
+        platform_discount: sumField(productRows, "platform_discount"),
+        net_merchandise_sales: sumField(productRows, "net_merchandise_sales"),
+        virtual_bundle_units: sumField(productRows, "virtual_bundle_units"),
+        bundle_units_sold: sumField(productRows, "bundle_units_sold"),
+        sales_units: sumField(productRows, "sales_units"),
+        sample_units: sumField(productRows, "sample_units"),
+        replacement_units: sumField(productRows, "replacement_units"),
+        return_rate_by_units: units_sold ? returned_units / units_sold : null,
+      };
+    })
+    .sort((a, b) => (b.net_merchandise_sales || 0) - (a.net_merchandise_sales || 0));
+}
+
+function buildCogsSummaryRows(productRows) {
+  return productRows
+    .filter((row) => cogsMap[row.product_name])
+    .map((row) => ({
+      product: row.product_name,
+      component_units_sold: Number(row.units_sold || 0),
+      list_price: cogsMap[row.product_name].list_price,
+      unit_cogs: cogsMap[row.product_name].unit_cogs,
+      estimated_cogs: Number(row.units_sold || 0) * cogsMap[row.product_name].unit_cogs,
+    }))
+    .sort((a, b) => (b.component_units_sold || 0) - (a.component_units_sold || 0));
+}
+
+function buildCogsListingRows(productRows) {
+  return productRows
+    .filter((row) => cogsMap[row.product_name])
+    .map((row) => ({
+      listing: row.product_name,
+      listing_sku: row.seller_sku_resolved || "",
+      units_sold: Number(row.units_sold || 0),
+      mapped_component_units: Number(row.units_sold || 0),
+      net_merchandise_sales: Number(row.net_merchandise_sales || 0),
+      estimated_cogs: Number(row.units_sold || 0) * cogsMap[row.product_name].unit_cogs,
+      estimated_gross_profit: Number(row.net_merchandise_sales || 0) - Number(row.units_sold || 0) * cogsMap[row.product_name].unit_cogs,
+      cogs_assumption: "Hosted estimate from canonical product totals",
+    }))
+    .sort((a, b) => (b.net_merchandise_sales || 0) - (a.net_merchandise_sales || 0));
+}
+
+function choosePlanningBaselineWindow(horizonStart, horizonEnd) {
+  const mode = state.planningSettings.baseline || "last_full_month";
+  const latest = parseDateString(horizonEnd) || parseDateString(state.meta?.maxDate) || new Date();
+  if (mode === "last_30_days") {
+    return {
+      baselineStart: formatDateString(addDays(latest, -29)),
+      baselineEnd: formatDateString(latest),
+      baselineLabel: "Last 30 Days",
+    };
+  }
+  if (mode === "last_90_days") {
+    return {
+      baselineStart: formatDateString(addDays(latest, -89)),
+      baselineEnd: formatDateString(latest),
+      baselineLabel: "Last 90 Days",
+    };
+  }
+  if (mode === "custom_range") {
+    const start = normalizeDateInput(state.planningSettings.baselineStart || horizonStart);
+    const end = normalizeDateInput(state.planningSettings.baselineEnd || horizonEnd);
+    return start <= end
+      ? { baselineStart: start, baselineEnd: end, baselineLabel: "Custom Range" }
+      : { baselineStart: end, baselineEnd: start, baselineLabel: "Custom Range" };
+  }
+  const latestDate = parseDateString(horizonEnd) || latest;
+  const currentMonthStart = new Date(latestDate.getFullYear(), latestDate.getMonth(), 1);
+  const baselineEndDate = addDays(currentMonthStart, -1);
+  const baselineStartDate = new Date(baselineEndDate.getFullYear(), baselineEndDate.getMonth(), 1);
+  return {
+    baselineStart: formatDateString(baselineStartDate),
+    baselineEnd: formatDateString(baselineEndDate),
+    baselineLabel: "Last Full Month",
+  };
+}
+
+function safetyStockWeeksForDate(dateValue) {
+  const date = parseDateString(dateValue);
+  if (!date) return 3;
+  const month = date.getMonth() + 1;
+  const quarter = Math.ceil(month / 3);
+  return quarter <= 2 ? 3 : 5;
+}
+
+function buildPlanningRows(productDailyRows, inventorySnapshot, horizonStart, horizonEnd) {
+  const { baselineStart, baselineEnd, baselineLabel } = choosePlanningBaselineWindow(horizonStart, horizonEnd);
+  const baselineRows = productDailyRows.filter((row) => inDateRange(row.reporting_date, baselineStart, baselineEnd));
+  const baselineByProduct = aggregateProductRows(baselineRows);
+  const demandLookup = Object.fromEntries(baselineByProduct.map((row) => [row.product_name, Number(row.units_sold || 0)]));
+  const snapshotDate = normalizeDateInput(inventorySnapshot?.snapshot_date || horizonStart);
+  const snapshotProducts = inventorySnapshot?.products || {};
+  return planningInputs
+    .map((input) => {
+      const dashboardProduct = input.product;
+      const inventoryProduct = inventoryProductMap[dashboardProduct];
+      const inv = snapshotProducts[inventoryProduct] || {};
+      const on_hand = Number(inv.on_hand || 0);
+      const in_transit = Number(inv.in_transit || 0);
+      const units_sold_in_window = Number(demandLookup[dashboardProduct] || 0);
+      const baselineDays = daysBetweenInclusive(baselineStart, baselineEnd);
+      const horizonDays = daysBetweenInclusive(horizonStart, horizonEnd);
+      const upliftPct = Number(state.planningSettings.productForecasts[input.param] || state.planningSettings.defaultUpliftPct || 35);
+      const avg_daily_demand = units_sold_in_window / baselineDays;
+      const forecast_daily_demand = avg_daily_demand * (1 + upliftPct / 100);
+      const projected_in_transit_arrival_date = in_transit > 0 ? formatDateString(addDays(parseDateString(snapshotDate), inboundToFbtLeadDays)) : null;
+      const days_on_hand = forecast_daily_demand > 0 ? on_hand / forecast_daily_demand : null;
+      const on_hand_stockout = days_on_hand != null ? formatDateString(addDays(parseDateString(snapshotDate), Math.floor(days_on_hand))) : null;
+      const counted_in_transit = projected_in_transit_arrival_date && (!on_hand_stockout || projected_in_transit_arrival_date <= on_hand_stockout) ? in_transit : 0;
+      const effective_total_supply = on_hand + counted_in_transit;
+      const days_total_supply = forecast_daily_demand > 0 ? effective_total_supply / forecast_daily_demand : null;
+      const projected_stockout_date = days_total_supply != null ? formatDateString(addDays(parseDateString(snapshotDate), Math.floor(days_total_supply))) : null;
+      const safety_stock_weeks = safetyStockWeeksForDate(horizonStart);
+      const safety_stock_units = forecast_daily_demand > 0 ? forecast_daily_demand * safety_stock_weeks * 7 : null;
+      const forecast_units_in_horizon = forecast_daily_demand > 0 ? forecast_daily_demand * horizonDays : null;
+      const reorder_quantity = Math.max(0, (forecast_units_in_horizon || 0) + (safety_stock_units || 0) - effective_total_supply);
+      const reorder_date = projected_stockout_date
+        ? formatDateString(addDays(parseDateString(projected_stockout_date), -((safety_stock_weeks * 7) + reorderLeadDays)))
+        : null;
+      let status = "No demand in baseline";
+      if (forecast_daily_demand > 0 && reorder_quantity <= 0) status = "Covered";
+      else if (forecast_daily_demand > 0 && reorder_date && reorder_date <= snapshotDate) status = "Urgent";
+      else if (forecast_daily_demand > 0 && reorder_date && reorder_date <= formatDateString(addDays(parseDateString(snapshotDate), 7))) status = "Watch";
+      else if (forecast_daily_demand > 0) status = "Healthy";
+      return {
+        product: dashboardProduct,
+        inventory_product: inventoryProduct,
+        snapshot_date: snapshotDate,
+        baseline_label: baselineLabel,
+        baseline_start: baselineStart,
+        baseline_end: baselineEnd,
+        on_hand,
+        in_transit,
+        counted_in_transit,
+        effective_total_supply,
+        units_sold_in_window,
+        avg_daily_demand: avg_daily_demand || null,
+        forecast_uplift_pct: upliftPct,
+        forecast_daily_demand: forecast_daily_demand || null,
+        forecast_units_in_horizon: forecast_units_in_horizon || null,
+        safety_stock_weeks,
+        safety_stock_units,
+        projected_in_transit_arrival_date,
+        days_on_hand,
+        days_total_supply,
+        weeks_on_hand: days_on_hand != null ? days_on_hand / 7 : null,
+        weeks_total_supply: days_total_supply != null ? days_total_supply / 7 : null,
+        projected_stockout_date,
+        reorder_date,
+        reorder_quantity,
+        status,
+      };
+    })
+    .sort((a, b) => (b.reorder_quantity || 0) - (a.reorder_quantity || 0));
+}
+
+function buildStaticPayload(basePayload) {
+  const start = normalizeDateInput(document.getElementById("startDate")?.value || state.meta?.minDate || basePayload.summary?.start_date);
+  const end = normalizeDateInput(document.getElementById("endDate")?.value || state.meta?.maxDate || basePayload.summary?.end_date);
+  const fullSnapshotRange = start === normalizeDateInput(basePayload.summary?.start_date) && end === normalizeDateInput(basePayload.summary?.end_date);
+  const orderDailyRows = (basePayload.orderDailyRows || []).filter((row) => inDateRange(row.reporting_date, start, end));
+  const statementDailyRows = (basePayload.statementDailyRows || []).filter((row) => inDateRange(row.reporting_date, start, end));
+  const productDailyRows = (basePayload.productDailyRows || []).filter((row) => inDateRange(row.reporting_date, start, end));
+  const productRows = aggregateProductRows(productDailyRows);
+  const cogsSummaryRows = buildCogsSummaryRows(productRows);
+  const cogsListingRows = buildCogsListingRows(productRows);
+  const planningRows = buildPlanningRows(basePayload.productDailyRows || [], basePayload.inventorySnapshot || {}, start, end);
+  const orders_gross_product_sales = sumField(orderDailyRows, "gross_product_sales");
+  const product_sales_after_seller_discount = orders_gross_product_sales - sumField(orderDailyRows, "seller_discount");
+  const orders_net_product_sales = sumField(orderDailyRows, "net_product_sales");
+  const orders_paid_orders = sumField(orderDailyRows, "paid_orders");
+  const sales_units = sumField(orderDailyRows, "sales_units");
+  const sample_units = sumField(orderDailyRows, "sample_units");
+  const replacement_units = sumField(orderDailyRows, "replacement_units");
+  const operational_units = sumField(orderDailyRows, "operational_units");
+  const planningConfig = planningRows.length
+    ? {
+        baselineLabel: planningRows[0].baseline_label,
+        baselineStart: planningRows[0].baseline_start,
+        baselineEnd: planningRows[0].baseline_end,
+        defaultUpliftPct: Number(state.planningSettings.defaultUpliftPct || 35),
+        productForecasts: planningInputs.map((item) => ({
+          product: item.product,
+          uplift_pct: Number(state.planningSettings.productForecasts[item.param] || state.planningSettings.defaultUpliftPct || 35),
+        })),
+      }
+    : basePayload.planningConfig || {};
+  return {
+    ...basePayload,
+    summary: {
+      ...(basePayload.summary || {}),
+      start_date: start,
+      end_date: end,
+      planning_baseline: state.planningSettings.baseline,
+      planning_baseline_start: planningConfig.baselineStart || null,
+      planning_baseline_end: planningConfig.baselineEnd || null,
+      planning_default_uplift: Number(state.planningSettings.defaultUpliftPct || 35),
+      deployment_mode: "static",
+    },
+    orderSummary: {
+      ...(basePayload.orderSummary || {}),
+      orders_gross_product_sales,
+      product_sales_after_seller_discount,
+      product_sales_after_all_discounts: orders_net_product_sales,
+      orders_seller_discount: sumField(orderDailyRows, "seller_discount"),
+      orders_refund_amount: sumField(orderDailyRows, "export_refund_amount"),
+      orders_paid_orders,
+      orders_net_product_sales,
+      orders_aov: orders_paid_orders ? orders_net_product_sales / orders_paid_orders : null,
+      operational_units,
+      sales_units,
+      sample_units,
+      replacement_units,
+      units_per_paid_order: orders_paid_orders ? operational_units / orders_paid_orders : null,
+      selected_unique_customers: fullSnapshotRange ? basePayload.orderSummary?.selected_unique_customers ?? null : null,
+      selected_repeat_customers: fullSnapshotRange ? basePayload.orderSummary?.selected_repeat_customers ?? null : null,
+      selected_first_time_buyers: fullSnapshotRange ? basePayload.orderSummary?.selected_first_time_buyers ?? null : null,
+      selected_returning_customers: fullSnapshotRange ? basePayload.orderSummary?.selected_returning_customers ?? null : null,
+      selected_repeat_customer_rate: fullSnapshotRange ? basePayload.orderSummary?.selected_repeat_customer_rate ?? null : null,
+      selected_first_time_buyer_rate: fullSnapshotRange ? basePayload.orderSummary?.selected_first_time_buyer_rate ?? null : null,
+      valid_orders: fullSnapshotRange ? basePayload.orderSummary?.valid_orders ?? null : null,
+      canceled_orders: fullSnapshotRange ? basePayload.orderSummary?.canceled_orders ?? null : null,
+      refunded_orders: fullSnapshotRange ? basePayload.orderSummary?.refunded_orders ?? null : null,
+      returned_orders: fullSnapshotRange ? basePayload.orderSummary?.returned_orders ?? null : null,
+      delivered_orders: fullSnapshotRange ? basePayload.orderSummary?.delivered_orders ?? null : null,
+      shipped_orders: fullSnapshotRange ? basePayload.orderSummary?.shipped_orders ?? null : null,
+      cancellation_rate: fullSnapshotRange ? basePayload.orderSummary?.cancellation_rate ?? null : null,
+      refund_rate: fullSnapshotRange ? basePayload.orderSummary?.refund_rate ?? null : null,
+      return_rate: fullSnapshotRange ? basePayload.orderSummary?.return_rate ?? null : null,
+      delivery_rate: fullSnapshotRange ? basePayload.orderSummary?.delivery_rate ?? null : null,
+    },
+    statementSummary: {
+      ...(basePayload.statementSummary || {}),
+      finance_gross_sales: sumField(statementDailyRows, "gross_sales"),
+      finance_gross_sales_refund: sumField(statementDailyRows, "gross_sales_refund"),
+      finance_seller_discount: sumField(statementDailyRows, "seller_discount"),
+      finance_seller_discount_refund: sumField(statementDailyRows, "seller_discount_refund"),
+      finance_net_sales: sumField(statementDailyRows, "net_sales"),
+      finance_shipping_total: sumField(statementDailyRows, "shipping_total"),
+      finance_fees_total: sumField(statementDailyRows, "fees_total"),
+      finance_adjustments_total: sumField(statementDailyRows, "adjustments_total"),
+      finance_payout_amount: sumField(statementDailyRows, "payout_amount"),
+    },
+    dataQualitySummary: {
+      ...(basePayload.dataQualitySummary || {}),
+      mismatch_units_under_current_mode: fullSnapshotRange ? basePayload.dataQualitySummary?.mismatch_units_under_current_mode ?? null : null,
+      mismatch_pct_under_current_mode: fullSnapshotRange ? basePayload.dataQualitySummary?.mismatch_pct_under_current_mode ?? null : null,
+      inferred_units: fullSnapshotRange ? basePayload.dataQualitySummary?.inferred_units ?? null : null,
+      spillover_rows: fullSnapshotRange ? basePayload.dataQualitySummary?.spillover_rows ?? null : null,
+      message: fullSnapshotRange
+        ? basePayload.dataQualitySummary?.message || "Hosted mode using the full snapshot range."
+        : "Hosted mode recalculates supported dashboard views from snapshot rows. Data-quality checks still reflect the source snapshot build.",
+    },
+    orderDailyRows,
+    statementDailyRows,
+    productRows,
+    productDailyRows,
+    cogsSummaryRows,
+    cogsListingRows,
+    inventoryPlanningRows: planningRows,
+    planningConfig,
+  };
 }
 
 const workspaces = [
@@ -337,29 +694,15 @@ function renderMeta(meta) {
 
 function applyDeploymentModeUi() {
   if (!staticModeEnabled()) return;
-  document.getElementById("outputSelect").disabled = true;
-  document.getElementById("dateBasisSelect").disabled = true;
-  document.getElementById("orderBucketModeSelect").disabled = true;
-  document.getElementById("startDate").disabled = true;
-  document.getElementById("endDate").disabled = true;
-  document.getElementById("targetZip").disabled = true;
-  document.getElementById("radiusMilesSelect").disabled = true;
-  document.getElementById("targetCity").disabled = true;
-  document.getElementById("targetState").disabled = true;
-  document.getElementById("uploadKind").disabled = true;
-  document.getElementById("uploadFiles").disabled = true;
-  const submitButton = document.getElementById("applyFiltersButton");
-  submitButton.disabled = true;
-  submitButton.textContent = "Snapshot mode";
   document.getElementById("refreshButton").textContent = "Reload snapshot";
   const uploadButton = document.getElementById("uploadButton");
   if (uploadButton) {
-    uploadButton.disabled = true;
-    uploadButton.textContent = "Upload disabled";
+    uploadButton.disabled = false;
+    uploadButton.textContent = "Upload Files";
   }
   const uploadStatus = document.getElementById("uploadStatus");
   if (uploadStatus) {
-    uploadStatus.textContent = "Uploads only work in local mode.";
+    uploadStatus.textContent = "Hosted mode uploads to shared storage, then refreshes the hosted snapshot.";
   }
 }
 
@@ -871,8 +1214,9 @@ function renderSummary(summary) {
   const dataQuality = state.payload?.dataQualitySummary || {};
   const orderBucketMode = summary.order_bucket_mode === "file_month" ? "Raw Export File Month" : "Paid Time";
   const metaHtml = [
-    staticModeEnabled() ? statChip("Deploy Mode", "Static snapshot", "accent") : "",
+    staticModeEnabled() ? statChip("Deploy Mode", "Hosted snapshot", "accent") : "",
     state.meta?.snapshotGeneratedAt ? statChip("Snapshot", new Date(state.meta.snapshotGeneratedAt).toLocaleString(), "accent") : "",
+    staticModeEnabled() ? statChip("Hosted filters", "Date range + planning enabled", "accent") : "",
     statChip("Output", state.payload?.selectedOutputDir || "analysis_output", "primary"),
     statChip("Sources", summary.selected_sources.join(", "), "primary"),
     statChip("Orders basis", "Paid time", "primary"),
@@ -900,11 +1244,16 @@ function renderSummary(summary) {
     { key: "orders-aov", label: "AOV", value: fmtCurrency(orderSummary.orders_aov), note: "Net product sales divided by paid orders in the selected paid-time slice" },
     { key: "orders-paid-orders", label: "Paid Orders", value: fmtNumber(orderSummary.orders_paid_orders), note: "Unique paid orders in the selected paid-time slice" },
     { key: "units-sold", label: "Units Sold", value: fmtNumber(orderSummary.sales_units), note: "Sales units in the selected paid-time slice; samples and replacements excluded" },
-    { key: "unique-customers", label: "Unique Customers", value: fmtNumber(orderSummary.selected_unique_customers), note: "Distinct customer proxies in the selected paid-time slice" },
-    { key: "first-time-buyers", label: "First-Time Buyers", value: fmtNumber(orderSummary.selected_first_time_buyers), note: "Customer proxies whose first observed valid order in loaded history falls in this slice" },
-    { key: "repeat-customers", label: "Repeat Customers", value: fmtNumber(orderSummary.selected_repeat_customers), note: "Customer proxies with more than one order in the selected paid-time slice" },
-    { key: "repeat-customer-rate", label: "Repeat Customer Rate", value: fmtPercent(orderSummary.selected_repeat_customer_rate), note: "Repeat customers divided by unique customers in the selected paid-time slice" },
   ];
+
+  if (orderSummary.selected_unique_customers != null) {
+    cards.push(
+      { key: "unique-customers", label: "Unique Customers", value: fmtNumber(orderSummary.selected_unique_customers), note: "Distinct customer proxies in the selected paid-time slice" },
+      { key: "first-time-buyers", label: "First-Time Buyers", value: fmtNumber(orderSummary.selected_first_time_buyers), note: "Customer proxies whose first observed valid order in loaded history falls in this slice" },
+      { key: "repeat-customers", label: "Repeat Customers", value: fmtNumber(orderSummary.selected_repeat_customers), note: "Customer proxies with more than one order in the selected paid-time slice" },
+      { key: "repeat-customer-rate", label: "Repeat Customer Rate", value: fmtPercent(orderSummary.selected_repeat_customer_rate), note: "Repeat customers divided by unique customers in the selected paid-time slice" },
+    );
+  }
 
   if (summary.target_zip) {
     cards.push(
@@ -1324,6 +1673,10 @@ function metricsStackHtml(items) {
     .join("")}</div>`;
 }
 
+function hostedFallback(value, label = "Hosted summary only") {
+  return value == null ? label : value;
+}
+
 function planningLabel(product) {
   return product.replace(" Bomb 2-Pack", "").replace(" Bomb", "");
 }
@@ -1361,7 +1714,7 @@ function planningControlsHtml(payload) {
   const baselineOptions = state.planningSettings.baselineOptions.length
     ? state.planningSettings.baselineOptions
     : config.baselineOptions || defaultPlanningBaselineOptions;
-  const disabled = staticModeEnabled() ? "disabled" : "";
+  const disabled = "";
   const customRangeVisible = state.planningSettings.baseline === "custom_range";
   return `
     <div class="filter-group planning-panel">
@@ -1806,45 +2159,46 @@ function renderSharedTable(tabKey, payload) {
 
 function renderOrdersWorkspace(payload) {
   const summary = payload.orderSummary || {};
+  const hostedLimited = staticModeEnabled();
   const overviewBody = `
     <div class="overview-grid">
       ${panelHtml("Orders revenue trend", "Gross and net product sales by paid time.", financeChartHtml(payload.orderDailyRows, "gross_product_sales", "net_product_sales", "Orders Gross", "Orders Net"), "Orders")}
       ${panelHtml(
         "Orders snapshot",
         "Current paid-time order performance.",
-        metricsStackHtml([
-          { label: "Net product sales", value: fmtCurrency(summary.orders_net_product_sales) },
-          { label: "AOV", value: fmtCurrency(summary.orders_aov) },
-          { label: "Paid orders", value: fmtNumber(summary.orders_paid_orders) },
-          { label: "Sales units", value: fmtNumber(summary.sales_units) },
-          { label: "Units per paid order", value: summary.units_per_paid_order == null ? "N/A" : Number(summary.units_per_paid_order).toFixed(2) },
-          { label: "First-time buyers", value: fmtNumber(summary.selected_first_time_buyers) },
-          { label: "Repeat customers", value: fmtNumber(summary.selected_repeat_customers) },
-          { label: "Repeat customer rate", value: fmtPercent(summary.selected_repeat_customer_rate) },
-        ]),
+          metricsStackHtml([
+            { label: "Net product sales", value: fmtCurrency(summary.orders_net_product_sales) },
+            { label: "AOV", value: fmtCurrency(summary.orders_aov) },
+            { label: "Paid orders", value: fmtNumber(summary.orders_paid_orders) },
+            { label: "Sales units", value: fmtNumber(summary.sales_units) },
+            { label: "Units per paid order", value: summary.units_per_paid_order == null ? "N/A" : Number(summary.units_per_paid_order).toFixed(2) },
+            { label: "First-time buyers", value: hostedFallback(summary.selected_first_time_buyers == null ? null : fmtNumber(summary.selected_first_time_buyers)) },
+            { label: "Repeat customers", value: hostedFallback(summary.selected_repeat_customers == null ? null : fmtNumber(summary.selected_repeat_customers)) },
+            { label: "Repeat customer rate", value: hostedFallback(summary.selected_repeat_customer_rate == null ? null : fmtPercent(summary.selected_repeat_customer_rate)) },
+          ]),
         "Orders",
       )}
     </div>
-    <div class="overview-grid">
+    ${hostedLimited ? "" : `<div class="overview-grid">
         ${chartPanelHtml("orders-status", "Status mix", "Order status composition for the selected slice.", payload.statusRows, "status", "order_count", fmtNumber, "Mix", { green: true })}
       ${panelHtml(
         "Order health",
         "Operational rates for refunds, returns, cancellations, and delivery.",
-        metricsStackHtml([
-          { label: "Valid orders", value: fmtNumber(summary.valid_orders) },
-          { label: "Cancellation rate", value: fmtPercent(summary.cancellation_rate) },
-          { label: "Refund rate", value: fmtPercent(summary.refund_rate) },
-          { label: "Return rate", value: fmtPercent(summary.return_rate) },
-          { label: "Delivery rate", value: fmtPercent(summary.delivery_rate) },
-        ]),
+          metricsStackHtml([
+            { label: "Valid orders", value: hostedFallback(summary.valid_orders == null ? null : fmtNumber(summary.valid_orders)) },
+            { label: "Cancellation rate", value: hostedFallback(summary.cancellation_rate == null ? null : fmtPercent(summary.cancellation_rate)) },
+            { label: "Refund rate", value: hostedFallback(summary.refund_rate == null ? null : fmtPercent(summary.refund_rate)) },
+            { label: "Return rate", value: hostedFallback(summary.return_rate == null ? null : fmtPercent(summary.return_rate)) },
+            { label: "Delivery rate", value: hostedFallback(summary.delivery_rate == null ? null : fmtPercent(summary.delivery_rate)) },
+          ]),
         "Health",
       )}
-    </div>
+    </div>`}
     <div class="overview-grid">
-        ${chartPanelHtml("orders-products", "Top products sent", "Physical products after bundle expansion.", payload.cogsSummaryRows.slice(0, 8), "product", "component_units_sold", fmtNumber, "Products")}
+        ${chartPanelHtml("orders-products", "Top products", "Top products in the selected hosted slice.", payload.productRows.slice(0, 8), "product_name", "units_sold", fmtNumber, "Products")}
         ${chartPanelHtml("orders-cities", "Top customer cities", "Top concentration points for unique customers.", payload.cityRows.slice(0, 8), "city", "unique_customers", fmtNumber, "Customers")}
     </div>
-    ${panelHtml("Cohort heatmap", "Retention by first observed order month.", cohortHeatmapHtml(payload.cohortHeatmap), "Retention")}
+    ${hostedLimited ? panelHtml("Hosted mode note", "This deployed view recalculates orders, products, and planning from hosted snapshot rows. Status mix, cohorts, and customer-level slices are only exact for the full snapshot range today.", '<div class="report-frame">Use date range and planning normally. Customer geography, reconciliation, and full cohort interactivity will move to the hosted import/query layer next.</div>', "Hosted") : panelHtml("Cohort heatmap", "Retention by first observed order month.", cohortHeatmapHtml(payload.cohortHeatmap), "Retention")}
       ${collapsibleDetailPanelHtml(
         "orders",
         state.activeSubtabs.orders,
@@ -1889,10 +2243,10 @@ function renderWorkspaceWithTable(workspaceKey, payload) {
             { label: "Adjustments", value: fmtCurrency(statementSummary.finance_adjustments_total) },
             { label: "Payout amount", value: fmtCurrency(statementSummary.finance_payout_amount) },
           ]),
-          "Finance",
-        )}
+            "Finance",
+          )}
       </div>
-      <div class="overview-grid">
+      ${staticModeEnabled() ? "" : `<div class="overview-grid">
           ${chartPanelHtml("finance-expense", "Expense structure", "Largest finance cost buckets for the selected statement window.", payload.expenseStructureRows || [], "category", "amount", fmtCurrency, "Finance", { green: true })}
         ${panelHtml(
           "Statement coverage",
@@ -1905,11 +2259,19 @@ function renderWorkspaceWithTable(workspaceKey, payload) {
           ]),
           "Reconciliation",
         )}
-      </div>
+      </div>`}
     `;
   }
 
   if (workspaceKey === "reconciliation") {
+    if (staticModeEnabled()) {
+      introPanels = panelHtml(
+        "Hosted limitation",
+        "Reconciliation is not yet interactive in hosted mode.",
+        '<div class="report-frame">This section depends on row-level hosted order-to-statement joins that are not yet being recalculated from the snapshot blob. It will be enabled when the hosted query layer is in place.</div>',
+        "Hosted",
+      );
+    } else {
     introPanels = `
       <div class="overview-grid">
         ${panelHtml(
@@ -1928,6 +2290,7 @@ function renderWorkspaceWithTable(workspaceKey, payload) {
         ${panelHtml("Why it differs", "Orders and finance do not align month-for-month because settlement timing lags placement timing.", `<div class="report-frame">Orders workspace = paid-time operational month. Finance workspace = settlement month from statement date. Reconciliation shows where those two systems meet by Order ID.</div>`, "Definitions")}
       </div>
     `;
+    }
   }
 
   if (workspaceKey === "products") {
@@ -1939,12 +2302,12 @@ function renderWorkspaceWithTable(workspaceKey, payload) {
     const planningConfig = payload.planningConfig || {};
     introPanels = `
       <div class="overview-grid">
-          ${chartPanelHtml("products-physical", "Products sent to TikTok", "Physical unit ranking after bundle expansion.", payload.cogsSummaryRows.slice(0, 10), "product", "component_units_sold", fmtNumber, "Products")}
+          ${chartPanelHtml("products-physical", "Products", "Product unit ranking for the selected slice.", payload.productRows.slice(0, 10), "product_name", "units_sold", fmtNumber, "Products")}
           ${panelHtml(
             "Product summary",
             "High-level operating read for the current slice.",
             metricsStackHtml([
-              { label: "Physical products tracked", value: fmtNumber(payload.cogsSummaryRows.length) },
+               { label: "Tracked products", value: fmtNumber(payload.productRows.length) },
               { label: "Listing rows", value: fmtNumber(payload.productRows.length) },
               { label: "Sales units", value: fmtNumber(orderSummary.sales_units) },
               { label: "Sample units", value: fmtNumber(orderSummary.sample_units) },
@@ -1981,6 +2344,14 @@ function renderWorkspaceWithTable(workspaceKey, payload) {
   }
 
   if (workspaceKey === "customers") {
+    if (staticModeEnabled()) {
+      introPanels = panelHtml(
+        "Hosted limitation",
+        "Customer geography is not yet interactive in hosted mode.",
+        '<div class="report-frame">The deployed site can already support date range and planning from hosted rows. Customer-level city, ZIP, radius, and cohort views still need the hosted row-level query layer to be exact for filtered ranges.</div>',
+        "Hosted",
+      );
+    } else {
     introPanels = `
       <div class="overview-grid">
         ${chartPanelHtml("customers-cities", "Top cities", "Highest customer concentration by city.", payload.cityRows.slice(0, 10), "city", "unique_customers", fmtNumber, "Cities")}
@@ -1992,17 +2363,26 @@ function renderWorkspaceWithTable(workspaceKey, payload) {
             { label: "Target city orders", value: fmtNumber(payload.targetCitySummary?.orders_in_city) },
             { label: "Radius customers", value: fmtNumber(payload.radiusSummary?.customers_within_radius) },
             { label: "Radius orders", value: fmtNumber(payload.radiusSummary?.orders_within_radius) },
-            { label: "Unique customers", value: fmtNumber(orderSummary.selected_unique_customers) },
-            { label: "Repeat customers", value: fmtNumber(orderSummary.selected_repeat_customers) },
+            { label: "Unique customers", value: hostedFallback(orderSummary.selected_unique_customers == null ? null : fmtNumber(orderSummary.selected_unique_customers)) },
+            { label: "Repeat customers", value: hostedFallback(orderSummary.selected_repeat_customers == null ? null : fmtNumber(orderSummary.selected_repeat_customers)) },
           ]),
           "Targeting",
         )}
       </div>
       ${panelHtml("Cohort heatmap", "Retention view for customer behavior.", cohortHeatmapHtml(payload.cohortHeatmap), "Retention")}
     `;
+    }
   }
 
   if (workspaceKey === "audit") {
+    if (staticModeEnabled()) {
+      introPanels = panelHtml(
+        "Hosted limitation",
+        "Audit detail is currently tied to the source snapshot build.",
+        '<div class="report-frame">Formulas and report output are still available, but full hosted audit interactivity will come with the Supabase query/import layer.</div>',
+        "Hosted",
+      );
+    } else {
     introPanels = `
       <div class="overview-grid">
         ${panelHtml(
@@ -2018,6 +2398,7 @@ function renderWorkspaceWithTable(workspaceKey, payload) {
         ${panelHtml("Source notes", "Analyzer definitions, formulas, and report output live here.", `<div class="report-frame">Switch between Math audit, KPI definitions, and Report using the sub-tabs above.</div>`, "Audit")}
       </div>
     `;
+    }
   }
 
   const detailBlock = collapsibleDetailPanelHtml(
@@ -2116,11 +2497,19 @@ function renderWorkspaceNav() {
   document.getElementById("workspaceNav").innerHTML = workspaceButtonsHtml();
 }
 
-async function loadDashboard() {
+async function loadDashboard(forceRemote = false) {
   setSubmitState(true);
   setLoading();
   try {
-    const payload = await fetchJson(dashboardUrl());
+    if (!staticModeEnabled() || forceRemote || !state.basePayload) {
+      const payload = await fetchJson(dashboardUrl());
+      if (staticModeEnabled()) {
+        state.basePayload = payload;
+      } else {
+        state.payload = payload;
+      }
+    }
+    const payload = staticModeEnabled() ? buildStaticPayload(state.basePayload) : state.payload;
     state.payload = payload;
     state.planningSettings.baseline = payload.summary?.planning_baseline || state.planningSettings.baseline;
     state.planningSettings.baselineStart = payload.summary?.planning_baseline_start || state.planningSettings.baselineStart;
@@ -2157,7 +2546,7 @@ async function uploadFiles() {
 
   setUploadState(true, `Uploading ${files.length} file(s)...`);
   try {
-    const result = await postForm("/api/upload", formData);
+    const result = await postForm(uploadUrl(), formData);
     fileInput.value = "";
     state.meta = await fetchJson(metaUrl());
     renderMeta(state.meta);
@@ -2177,10 +2566,10 @@ async function init() {
   });
   const applyDashboardFilters = () => {
     syncPlanningStateFromDom(false);
-    loadDashboard();
+    loadDashboard(staticModeEnabled() ? false : true);
   };
   document.getElementById("applyFiltersButton").addEventListener("click", applyDashboardFilters);
-  document.getElementById("refreshButton").addEventListener("click", loadDashboard);
+  document.getElementById("refreshButton").addEventListener("click", () => loadDashboard(true));
   document.getElementById("uploadButton").addEventListener("click", uploadFiles);
   ["startDate", "endDate", "targetZip", "targetCity", "targetState"].forEach((id) => {
     document.getElementById(id).addEventListener("keydown", (event) => {

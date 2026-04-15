@@ -117,10 +117,10 @@ Netlify is configured to run that command automatically using `netlify.toml`.
 1. Create a free Netlify account.
 2. Import the GitHub repo.
 3. Let Netlify use the repo root.
-4. Build command: `python deployment/export_dashboard_snapshot.py`
+4. Build command: `python deployment/sync_dashboard_to_supabase.py`
 5. Publish directory: `web_dashboard`
 
-Netlify will build the snapshot and deploy the static dashboard.
+Netlify will rebuild the snapshot, upload the latest hosted snapshot to Supabase, and deploy the static dashboard.
 
 ### What You Need To Create
 
@@ -137,7 +137,8 @@ If you want the dashboard data hosted independently from your laptop:
 
 1. Create a free Supabase account and project.
 2. Run `supabase/schema.sql` in the SQL editor.
-3. Create a Storage bucket, for example `dashboard-snapshots`.
+3. Create a Storage bucket named `dashboard-snapshots`.
+4. Create a second Storage bucket named `dashboard-uploads`.
 4. Add these environment variables locally before running the sync scripts:
 
 ```bash
@@ -146,14 +147,20 @@ SUPABASE_SERVICE_ROLE_KEY=...
 SUPABASE_STORAGE_BUCKET=dashboard-snapshots
 SUPABASE_STORAGE_PREFIX=latest
 SUPABASE_SNAPSHOT_LABEL=latest
+SUPABASE_UPLOAD_BUCKET=dashboard-uploads
+SUPABASE_UPLOAD_PREFIX=uploads
 ```
 
-For the deployed Netlify site to read the hosted snapshot files instead of the repo copy, also add these Netlify environment variables:
+For the deployed Netlify site to read hosted snapshot files and accept hosted uploads, add these Netlify environment variables:
 
 ```bash
 SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
 SUPABASE_STORAGE_BUCKET=dashboard-snapshots
 SUPABASE_STORAGE_PREFIX=latest
+SUPABASE_UPLOAD_BUCKET=dashboard-uploads
+SUPABASE_UPLOAD_PREFIX=uploads
+NETLIFY_BUILD_HOOK_URL=...
 ```
 
 Then run:
@@ -175,7 +182,17 @@ That writes:
 - snapshot files into Supabase Storage
 - one row into `dashboard_snapshots`
 - the current planning table into `inventory_planning_snapshots`
-- upload tracking tables remain available for the next phase
+- upload tracking rows into `upload_batches` once hosted uploads are used
+
+### Hosted Upload Flow
+
+Once Netlify has the env vars above:
+
+1. The live dashboard uploads files to `dashboard-uploads`.
+2. The upload function triggers the Netlify build hook.
+3. Netlify rebuilds the snapshot from the hosted raw files.
+4. The latest snapshot is written back to `dashboard-snapshots`.
+5. Everyone sees the refreshed dashboard without your laptop being online.
 
 ### Local Verification
 
@@ -184,12 +201,12 @@ Run:
 ```bash
 python -m unittest tests.test_export_dashboard_snapshot -v
 python -m unittest tests.test_sync_dashboard_to_supabase -v
-python deployment/export_dashboard_snapshot.py
+python deployment/sync_dashboard_to_supabase.py
 python web_dashboard/server.py
 ```
 
-Local `server.py` still provides the full dynamic dashboard on `http://127.0.0.1:8080`.
-The deployed site runs in static snapshot mode automatically.
+Local `server.py` can also use the hosted Supabase upload/snapshot path if those env vars are set in the shell before you start it.
+The deployed site uses hosted snapshots and hosted uploads when the Netlify env vars are set.
 
 ## Legacy Streamlit Dashboard
 

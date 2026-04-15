@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,12 +12,14 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from deployment.materialize_supabase_uploads import materialize_supabase_uploads
 from web_dashboard.server import dashboard_payload, detect_order_source_dirs, detect_statement_sources, meta_payload
 
 
 WEB_DIR = ROOT_DIR / "web_dashboard"
 SNAPSHOT_DIR = WEB_DIR / "data" / "snapshot"
 RUNTIME_CONFIG_PATH = WEB_DIR / "runtime-config.js"
+DATA_ROOT_ENV = "DASHBOARD_DATA_ROOT"
 
 
 def has_local_snapshot_inputs() -> bool:
@@ -118,19 +121,40 @@ def export_snapshot(target_dir: Path | None = None) -> tuple[Path, Path]:
     meta_path = destination / "meta.json"
     dashboard_path = destination / "dashboard.json"
 
-    if not has_local_snapshot_inputs() and meta_path.exists() and dashboard_path.exists():
+    temp_input_dir: tempfile.TemporaryDirectory[str] | None = None
+    previous_data_root = os.getenv(DATA_ROOT_ENV)
+    has_inputs = has_local_snapshot_inputs()
+    if not has_inputs:
+        temp_input_dir = tempfile.TemporaryDirectory()
+        staged_root = materialize_supabase_uploads(Path(temp_input_dir.name))
+        if staged_root is not None:
+            os.environ[DATA_ROOT_ENV] = str(staged_root)
+            has_inputs = has_local_snapshot_inputs()
+        else:
+            temp_input_dir.cleanup()
+            temp_input_dir = None
+
+    if not has_inputs and meta_path.exists() and dashboard_path.exists():
         write_runtime_config()
         return meta_path, dashboard_path
 
-    meta = meta_payload()
-    params = build_dashboard_params(meta)
-    payload = dashboard_payload(params)
-    static_meta = build_static_meta(meta, generated_at)
-    static_payload = build_static_payload(payload, generated_at)
-    write_json(meta_path, static_meta)
-    write_json(dashboard_path, static_payload)
-    write_runtime_config()
-    return meta_path, dashboard_path
+    try:
+        meta = meta_payload()
+        params = build_dashboard_params(meta)
+        payload = dashboard_payload(params)
+        static_meta = build_static_meta(meta, generated_at)
+        static_payload = build_static_payload(payload, generated_at)
+        write_json(meta_path, static_meta)
+        write_json(dashboard_path, static_payload)
+        write_runtime_config()
+        return meta_path, dashboard_path
+    finally:
+        if previous_data_root is None:
+            os.environ.pop(DATA_ROOT_ENV, None)
+        else:
+            os.environ[DATA_ROOT_ENV] = previous_data_root
+        if temp_input_dir is not None:
+            temp_input_dir.cleanup()
 
 
 if __name__ == "__main__":
