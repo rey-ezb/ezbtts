@@ -638,6 +638,24 @@ input:focus,
   align-items: start;
 }
 
+.planning-product-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.planning-detail-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.planning-period-card,
+.planning-period-card .panel {
+  min-width: 0;
+}
+
 .subtab-button {
   border: 1px solid var(--line);
   background: #ffffff;
@@ -1172,6 +1190,8 @@ tbody tr:hover td.sticky-first-col {
   .control-grid-targeting-zip,
   .control-grid-targeting-city,
   .control-grid-planning,
+  .planning-detail-row,
+  .planning-product-grid,
   .hero-upload-controls {
     grid-template-columns: 1fr;
   }

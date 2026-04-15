@@ -12,6 +12,10 @@ function jsonResponse(status, payload) {
   });
 }
 
+function jsonErrorResponse(status, message) {
+  return jsonResponse(status, { message, error: message });
+}
+
 function sanitizeUploadFilename(filename) {
   const parts = String(filename || "").split(/[/\\]/);
   const name = (parts[parts.length - 1] || "").trim();
@@ -31,11 +35,19 @@ function storageObjectPath(uploadKind, filename) {
   return [uploadPrefix(), uploadKind, `${timestamp}__${cleaned}`].filter(Boolean).join("/");
 }
 
+function encodeStorageObjectPath(objectPath) {
+  return String(objectPath || "")
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
 async function uploadToSupabase({ objectPath, content, contentType }) {
   const supabaseUrl = String(process.env.SUPABASE_URL || "").replace(/\/+$/, "");
   const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "");
   const bucket = String(process.env.SUPABASE_UPLOAD_BUCKET || "");
-  const response = await fetch(`${supabaseUrl}/storage/v1/object/${bucket}/${objectPath}`, {
+  const encodedObjectPath = encodeStorageObjectPath(objectPath);
+  const response = await fetch(`${supabaseUrl}/storage/v1/object/${bucket}/${encodedObjectPath}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${serviceRoleKey}`,
@@ -84,20 +96,20 @@ async function triggerBuildHook() {
 }
 
 export default async (request) => {
-  if (request.method !== "POST") return jsonResponse(405, { message: "Method not allowed." });
+  if (request.method !== "POST") return jsonErrorResponse(405, "Method not allowed.");
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY || !process.env.SUPABASE_UPLOAD_BUCKET) {
-    return jsonResponse(503, { message: "Hosted uploads are not configured yet." });
+    return jsonErrorResponse(503, "Hosted uploads are not configured yet.");
   }
 
   const formData = await request.formData();
   const uploadKind = String(formData.get("upload_kind") || "").trim().toLowerCase();
   if (!UPLOAD_TARGET_FOLDERS[uploadKind]) {
-    return jsonResponse(400, { message: "Unsupported upload type." });
+    return jsonErrorResponse(400, "Unsupported upload type.");
   }
 
   const files = formData.getAll("files").filter((entry) => typeof entry?.arrayBuffer === "function");
   if (!files.length) {
-    return jsonResponse(400, { message: "Choose at least one file to upload." });
+    return jsonErrorResponse(400, "Choose at least one file to upload.");
   }
 
   try {
@@ -132,7 +144,7 @@ export default async (request) => {
       rebuildTriggered,
     });
   } catch (error) {
-    return jsonResponse(500, { message: error instanceof Error ? error.message : "Hosted upload failed." });
+    return jsonErrorResponse(500, error instanceof Error ? error.message : "Hosted upload failed.");
   }
 };
 

@@ -24,10 +24,13 @@ const state = {
   detailExpanded: {},
   planningMessage: "",
   planningSettings: {
-    baseline: "last_full_month",
+    baseline: "last_30_days",
     defaultUpliftPct: "35",
     baselineStart: "",
     baselineEnd: "",
+    horizonMonth: "",
+    horizonStart: "",
+    horizonEnd: "",
     productForecasts: {},
     baselineOptions: [],
   },
@@ -149,6 +152,35 @@ function planningSettingValue(param) {
   return state.planningSettings.productForecasts[param] || defaultUplift;
 }
 
+function monthWindow(value) {
+  const normalized = String(value || "").trim();
+  const match = /^(\d{4})-(\d{2})$/.exec(normalized);
+  if (!match) return { start: "", end: "" };
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const start = new Date(year, monthIndex, 1);
+  const end = new Date(year, monthIndex + 1, 0);
+  return {
+    start: formatDateString(start),
+    end: formatDateString(end),
+  };
+}
+
+function latestActualPlanningDate() {
+  return normalizeDateInput(state.meta?.maxDate || state.basePayload?.summary?.end_date || state.payload?.summary?.end_date || "");
+}
+
+function resolvePlanningHorizonWindow(defaultStart, defaultEnd) {
+  let horizonStart = normalizeDateInput(state.planningSettings.horizonStart || defaultStart);
+  let horizonEnd = normalizeDateInput(state.planningSettings.horizonEnd || defaultEnd);
+  if (!horizonStart) horizonStart = normalizeDateInput(defaultStart);
+  if (!horizonEnd) horizonEnd = normalizeDateInput(defaultEnd);
+  if (horizonStart && horizonEnd && horizonStart > horizonEnd) {
+    [horizonStart, horizonEnd] = [horizonEnd, horizonStart];
+  }
+  return { horizonStart, horizonEnd };
+}
+
 function normalizeDateInput(value) {
   return value ? String(value).slice(0, 10) : "";
 }
@@ -258,8 +290,8 @@ function buildCogsListingRows(productRows) {
 }
 
 function choosePlanningBaselineWindow(horizonStart, horizonEnd) {
-  const mode = state.planningSettings.baseline || "last_full_month";
-  const latest = parseDateString(horizonEnd) || parseDateString(state.meta?.maxDate) || new Date();
+  const mode = state.planningSettings.baseline || "last_30_days";
+  const latest = parseDateString(latestActualPlanningDate()) || parseDateString(horizonEnd) || new Date();
   if (mode === "last_30_days") {
     return {
       baselineStart: formatDateString(addDays(latest, -29)),
@@ -826,6 +858,8 @@ function buildReconciliationViewFromRows(orderLevelAllRows, statementRowsAll, da
 async function buildStaticPayload(basePayload) {
   const start = normalizeDateInput(document.getElementById("startDate")?.value || state.meta?.minDate || basePayload.summary?.start_date);
   const end = normalizeDateInput(document.getElementById("endDate")?.value || state.meta?.maxDate || basePayload.summary?.end_date);
+  const { horizonStart, horizonEnd } = resolvePlanningHorizonWindow(start, end);
+  const { baselineStart, baselineEnd } = choosePlanningBaselineWindow(horizonStart, horizonEnd);
   const selectedSources = selectedSourcesFromDom();
   const dateBasis = document.getElementById("dateBasisSelect")?.value || "order";
   const targetZip = document.getElementById("targetZip")?.value || basePayload.summary?.target_zip || "";
@@ -833,8 +867,16 @@ async function buildStaticPayload(basePayload) {
   const cityRadiusMiles = document.getElementById("cityRadiusMilesSelect")?.value || basePayload.summary?.city_radius_miles || radiusMiles || 20;
   const targetCity = document.getElementById("targetCity")?.value || basePayload.summary?.target_city || "";
   const targetState = document.getElementById("targetState")?.value || basePayload.summary?.target_state || "";
-  const [productDailyChunkRows, orderLevelChunkRows, customerFirstOrderChunkRows, statementChunkRows, rawProductNameChunkRows] = await Promise.all([
+  const [
+    filteredProductDailyChunkRows,
+    planningProductDailyChunkRows,
+    filteredOrderLevelChunkRows,
+    customerFirstOrderAllChunkRows,
+    filteredStatementChunkRows,
+    filteredRawProductNameChunkRows,
+  ] = await Promise.all([
     fetchStaticChunkRows("productDailyRows", start, end),
+    fetchStaticChunkRows("productDailyRows", baselineStart, baselineEnd),
     fetchStaticChunkRows("orderLevelRowsAll", start, end),
     fetchStaticChunkRows(
       "customerFirstOrderAllRows",
@@ -846,27 +888,30 @@ async function buildStaticPayload(basePayload) {
   ]);
   const orderDailyRows = (basePayload.orderDailyRows || []).filter((row) => inDateRange(row.reporting_date, start, end));
   const statementDailyRows = (basePayload.statementDailyRows || []).filter((row) => inDateRange(row.reporting_date, start, end));
-  const productDailyRows = (productDailyChunkRows && productDailyChunkRows.length)
-    ? productDailyChunkRows
+  const productDailyRows = (filteredProductDailyChunkRows && filteredProductDailyChunkRows.length)
+    ? filteredProductDailyChunkRows
     : (basePayload.productDailyRows || []).filter((row) => inDateRange(row.reporting_date, start, end));
-  const orderLevelAllRows = filterOrderLevelRowsBySources(orderLevelChunkRows || [], selectedSources);
+  const planningProductDailyRows = (planningProductDailyChunkRows && planningProductDailyChunkRows.length)
+    ? planningProductDailyChunkRows
+    : (basePayload.productDailyRows || []).filter((row) => inDateRange(row.reporting_date, baselineStart, baselineEnd));
+  const orderLevelAllRows = filterOrderLevelRowsBySources(filteredOrderLevelChunkRows || [], selectedSources);
   const filteredOrderLevelRows = filterOrderLevelRows(orderLevelAllRows, start, end, selectedSources);
   const customerMetrics = buildCustomerMetricsFromOrderLevel(
     filteredOrderLevelRows,
     orderLevelAllRows,
-    customerFirstOrderChunkRows || [],
+    customerFirstOrderAllChunkRows || [],
   );
   const orderHealthMetrics = buildOrderHealthMetricsFromOrderLevel(filteredOrderLevelRows);
   const statusRows = buildStatusRowsFromOrderLevel(filteredOrderLevelRows);
   const locationViews = buildLocationViewsFromOrderLevel(filteredOrderLevelRows, targetZip, radiusMiles, targetCity, targetState, cityRadiusMiles);
   const cohortSummaryRows = filterCohortSummaryRows(basePayload.cohortSummaryAllRows || [], start, end);
   const cohortHeatmap = buildCohortHeatmap(cohortSummaryRows);
-  const reconciliationView = buildReconciliationViewFromRows(orderLevelAllRows, statementChunkRows || [], dateBasis, start, end);
-  const rawProductNameRows = buildRawProductNameRows(rawProductNameChunkRows || [], start, end, selectedSources);
+  const reconciliationView = buildReconciliationViewFromRows(orderLevelAllRows, filteredStatementChunkRows || [], dateBasis, start, end);
+  const rawProductNameRows = buildRawProductNameRows(filteredRawProductNameChunkRows || [], start, end, selectedSources);
   const productRows = aggregateProductRows(productDailyRows);
   const cogsSummaryRows = buildCogsSummaryRows(productRows);
   const cogsListingRows = buildCogsListingRows(productRows);
-  const planningRows = buildPlanningRows(productDailyRows, basePayload.inventorySnapshot || {}, start, end);
+  const planningRows = buildPlanningRows(planningProductDailyRows, basePayload.inventorySnapshot || {}, horizonStart, horizonEnd);
   const orders_gross_product_sales = sumField(orderDailyRows, "gross_product_sales");
   const product_sales_after_seller_discount = orders_gross_product_sales - sumField(orderDailyRows, "seller_discount");
   const orders_net_product_sales = sumField(orderDailyRows, "net_product_sales");
@@ -880,6 +925,8 @@ async function buildStaticPayload(basePayload) {
         baselineLabel: planningRows[0].baseline_label,
         baselineStart: planningRows[0].baseline_start,
         baselineEnd: planningRows[0].baseline_end,
+        horizonStart,
+        horizonEnd,
         defaultUpliftPct: Number(state.planningSettings.defaultUpliftPct || 35),
         productForecasts: planningInputs.map((item) => ({
           product: item.product,
@@ -903,6 +950,8 @@ async function buildStaticPayload(basePayload) {
       planning_baseline: state.planningSettings.baseline,
       planning_baseline_start: planningConfig.baselineStart || null,
       planning_baseline_end: planningConfig.baselineEnd || null,
+      planning_horizon_start: planningConfig.horizonStart || null,
+      planning_horizon_end: planningConfig.horizonEnd || null,
       planning_default_uplift: Number(state.planningSettings.defaultUpliftPct || 35),
       deployment_mode: "static",
     },
@@ -1077,7 +1126,7 @@ async function fetchJson(url) {
 async function postForm(url, formData) {
   const response = await fetch(url, { method: "POST", body: formData });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
+  if (!response.ok) throw new Error(payload.error || payload.message || `Request failed: ${response.status}`);
   return payload;
 }
 
@@ -1133,9 +1182,11 @@ function buildQuery() {
   params.set("target_state", document.getElementById("targetState").value.trim().toUpperCase());
   params.set("radius_miles", document.getElementById("radiusMilesSelect").value);
   params.set("city_radius_miles", document.getElementById("cityRadiusMilesSelect").value);
-  params.set("planning_baseline", state.planningSettings.baseline || "last_full_month");
+  params.set("planning_baseline", state.planningSettings.baseline || "last_30_days");
   params.set("planning_baseline_start", state.planningSettings.baselineStart || "");
   params.set("planning_baseline_end", state.planningSettings.baselineEnd || "");
+  params.set("planning_horizon_start", state.planningSettings.horizonStart || "");
+  params.set("planning_horizon_end", state.planningSettings.horizonEnd || "");
   params.set("planning_default_uplift", state.planningSettings.defaultUpliftPct || "35");
   planningInputs.forEach((item) => {
     params.set(item.param, planningSettingValue(item.param));
@@ -1208,10 +1259,13 @@ function renderPlanningDefaults(defaults) {
     productForecasts[item.param] = String(productDefault?.default_uplift_pct ?? defaults.default_uplift_pct ?? 35);
   });
   state.planningSettings = {
-    baseline: defaults.baseline || "last_full_month",
+    baseline: defaults.baseline || "last_30_days",
     defaultUpliftPct: String(defaults.default_uplift_pct ?? 35),
     baselineStart: "",
     baselineEnd: "",
+    horizonMonth: "",
+    horizonStart: "",
+    horizonEnd: "",
     productForecasts,
     baselineOptions: defaults.baselineOptions || defaultPlanningBaselineOptions,
   };
@@ -2251,14 +2305,18 @@ function planningLabel(product) {
 
 function syncPlanningStateFromDom(requireCustomDates = false) {
   const baselineSelect = document.getElementById("planningTabBaselineSelect");
-  const defaultUpliftInput = document.getElementById("planningTabDefaultUplift");
   const baselineStartInput = document.getElementById("planningTabBaselineStart");
   const baselineEndInput = document.getElementById("planningTabBaselineEnd");
+  const horizonMonthInput = document.getElementById("planningTabHorizonMonth");
+  const horizonStartInput = document.getElementById("planningTabHorizonStart");
+  const horizonEndInput = document.getElementById("planningTabHorizonEnd");
 
-  if (baselineSelect) state.planningSettings.baseline = baselineSelect.value || "last_full_month";
-  if (defaultUpliftInput) state.planningSettings.defaultUpliftPct = defaultUpliftInput.value || "35";
+  if (baselineSelect) state.planningSettings.baseline = baselineSelect.value || "last_30_days";
   state.planningSettings.baselineStart = baselineStartInput?.value || "";
   state.planningSettings.baselineEnd = baselineEndInput?.value || "";
+  state.planningSettings.horizonMonth = horizonMonthInput?.value || "";
+  state.planningSettings.horizonStart = horizonStartInput?.value || "";
+  state.planningSettings.horizonEnd = horizonEndInput?.value || "";
 
   planningInputs.forEach((item) => {
     const input = document.querySelector(`[data-planning-param="${item.param}"]`);
@@ -2284,6 +2342,37 @@ function planningControlsHtml(payload) {
     : config.baselineOptions || defaultPlanningBaselineOptions;
   const disabled = "";
   const customRangeVisible = state.planningSettings.baseline === "custom_range";
+  const horizonStart = escapeHtml(state.planningSettings.horizonStart || payload.summary?.planning_horizon_start || "");
+  const horizonEnd = escapeHtml(state.planningSettings.horizonEnd || payload.summary?.planning_horizon_end || "");
+  const horizonMonth = escapeHtml(state.planningSettings.horizonMonth || "");
+  const planningPeriodCard = panelHtml(
+    "Planning Period",
+    "This separates the future period you are planning for from the past sales baseline used to estimate demand.",
+    metricsStackHtml([
+      { label: "Planning period", value: config.horizonStart && config.horizonEnd ? `${config.horizonStart} to ${config.horizonEnd}` : "N/A" },
+      { label: "Sales baseline", value: config.baselineLabel || "Last 30 Days" },
+      { label: "Baseline dates", value: config.baselineStart && config.baselineEnd ? `${config.baselineStart} to ${config.baselineEnd}` : "N/A" },
+    ]),
+    "Planning",
+  );
+  const productForecastFields = planningInputs
+    .map(
+      (item) => `
+        <label class="field">
+          <span>${escapeHtml(planningLabel(item.product))} %</span>
+          <input
+            id="planning-${escapeHtml(item.param)}"
+            data-planning-param="${escapeHtml(item.param)}"
+            type="number"
+            step="0.1"
+            min="-100"
+            value="${escapeHtml(planningSettingValue(item.param))}"
+            ${disabled}
+          >
+        </label>
+      `,
+    )
+    .join("");
   return `
     <div class="filter-group planning-panel">
       <div class="group-title">Demand Planning Inputs</div>
@@ -2300,13 +2389,21 @@ function planningControlsHtml(payload) {
           </select>
         </label>
         <label class="field">
-          <span>Default Increase %</span>
-          <input id="planningTabDefaultUplift" type="number" step="0.1" min="-100" value="${escapeHtml(state.planningSettings.defaultUpliftPct || "35")}" ${disabled}>
+          <span>Planning Month</span>
+          <input id="planningTabHorizonMonth" type="month" value="${horizonMonth}" ${disabled}>
         </label>
         <div class="field field-wide planning-note">
           <span>How It Works</span>
-          <div>Use the main date range as the planning horizon. Pick a baseline mode here, and if you choose custom range, set the baseline dates below.</div>
+          <div>Use the main dashboard date range for reporting. Use the planning month or planning dates below only for future demand planning.</div>
         </div>
+        <label class="field">
+          <span>Planning Start</span>
+          <input id="planningTabHorizonStart" type="date" value="${horizonStart}" ${disabled}>
+        </label>
+        <label class="field">
+          <span>Planning End</span>
+          <input id="planningTabHorizonEnd" type="date" value="${horizonEnd}" ${disabled}>
+        </label>
         <label class="field ${customRangeVisible ? "" : "field-hidden"}">
           <span>Baseline Start</span>
           <input id="planningTabBaselineStart" type="date" value="${escapeHtml(state.planningSettings.baselineStart || "")}" ${disabled}>
@@ -2315,30 +2412,77 @@ function planningControlsHtml(payload) {
           <span>Baseline End</span>
           <input id="planningTabBaselineEnd" type="date" value="${escapeHtml(state.planningSettings.baselineEnd || "")}" ${disabled}>
         </label>
-        ${planningInputs
-          .map(
-            (item) => `
-              <label class="field">
-                <span>${escapeHtml(planningLabel(item.product))} %</span>
-                <input
-                  id="planning-${escapeHtml(item.param)}"
-                  data-planning-param="${escapeHtml(item.param)}"
-                  type="number"
-                  step="0.1"
-                  min="-100"
-                  value="${escapeHtml(planningSettingValue(item.param))}"
-                  ${disabled}
-                >
-              </label>
-            `,
-          )
-          .join("")}
+        <div class="field-wide planning-detail-row">
+          <div class="planning-product-grid">
+            ${productForecastFields}
+          </div>
+          <div class="planning-period-card">
+            ${planningPeriodCard}
+          </div>
+        </div>
       </div>
       <div class="table-toolbar">
         <div class="table-caption">Update the forecast inputs here, then recalculate the planning table below.</div>
         <button id="applyPlanningButton" class="button button-secondary" type="button" ${disabled}>Apply Planning</button>
       </div>
       ${state.planningMessage ? `<div class="planning-message">${escapeHtml(state.planningMessage)}</div>` : ""}
+    </div>
+  `;
+}
+
+function planningWhyText(row) {
+  if (!row) return "No planning data yet.";
+  if (row.status === "Covered") {
+    return row.counted_in_transit > 0
+      ? "Current inventory plus in-transit units should cover this planning period."
+      : "Current inventory should cover this planning period.";
+  }
+  if (row.status === "Urgent") {
+    return "You are projected to run short in this planning period and should reorder now.";
+  }
+  if (row.status === "Watch") {
+    return "You are not fully covered for this planning period. Watch inventory and plan a reorder soon.";
+  }
+  if (row.status === "No demand in baseline") {
+    return "There is not enough recent sales history in the baseline to estimate demand confidently.";
+  }
+  return "Projected demand is above current usable inventory for this planning period.";
+}
+
+function planningSummaryRows(rows) {
+  return (rows || []).map((row) => ({
+    product: row.product,
+    need_for_period: row.forecast_units_in_horizon,
+    usable_inventory: row.effective_total_supply,
+    suggested_reorder: row.reorder_quantity,
+    status: row.status,
+    why: planningWhyText(row),
+  }));
+}
+
+function planningSummaryHtml(payload) {
+  const planningRows = payload.inventoryPlanningRows || [];
+  const summaryRows = planningSummaryRows(planningRows);
+  return `
+    <div class="workspace-main">
+      ${panelHtml(
+        "What To Buy",
+        "Suggested reorder amounts for the selected planning period.",
+        tableHtml(
+          summaryRows,
+          [
+            { key: "product", label: "Product" },
+            { key: "need_for_period", label: "Need For This Period", format: fmtNumber, numeric: true, mono: true },
+            { key: "usable_inventory", label: "Usable Inventory", format: fmtNumber, numeric: true, mono: true },
+            { key: "suggested_reorder", label: "Suggested Reorder", format: fmtNumber, numeric: true, mono: true },
+            { key: "status", label: "Status" },
+            { key: "why", label: "Why" },
+          ],
+          "Simple planning summary for the future period.",
+          { compact: true, stickyFirstColumn: true },
+        ),
+        "Planning",
+      )}
     </div>
   `;
 }
@@ -2415,6 +2559,9 @@ function renderSharedTable(tabKey, payload) {
         { key: "sales_units", label: "Sales Units", format: fmtNumber, numeric: true, mono: true },
         { key: "sample_units", label: "Sample Units", format: fmtNumber, numeric: true, mono: true },
         { key: "replacement_units", label: "Replacement Units", format: fmtNumber, numeric: true, mono: true },
+        { key: "solo_shipping_orders", label: "Solo Shipping Orders", format: fmtNumber, numeric: true, mono: true },
+        { key: "solo_avg_shipping_per_unit", label: "Solo Avg Shipping / Unit", format: fmtCurrency, numeric: true, mono: true },
+        { key: "solo_avg_shipping_per_sku", label: "Solo Avg Shipping / SKU", format: fmtCurrency, numeric: true, mono: true },
         { key: "net_merchandise_sales", label: "Net Merchandise Sales", format: fmtCurrency, numeric: true, mono: true },
         { key: "returned_units", label: "Returned Units", format: fmtNumber, numeric: true, mono: true },
       ],
@@ -2437,34 +2584,34 @@ function renderSharedTable(tabKey, payload) {
   }
 
   if (tabKey === "planning") {
-    return `${planningControlsHtml(payload)}${tableHtml(
+    return `${planningControlsHtml(payload)}${planningSummaryHtml(payload)}${tableHtml(
       payload.inventoryPlanningRows,
       [
         { key: "product", label: "Product" },
-        { key: "snapshot_date", label: "Snapshot Date", format: fmtDate, mono: true },
-        { key: "baseline_label", label: "Baseline", mono: true },
-        { key: "baseline_start", label: "Baseline Start", format: fmtDate, mono: true },
-        { key: "baseline_end", label: "Baseline End", format: fmtDate, mono: true },
-        { key: "on_hand", label: "On Hand", format: fmtNumber, numeric: true, mono: true },
-        { key: "in_transit", label: "In Transit", format: fmtNumber, numeric: true, mono: true },
-        { key: "counted_in_transit", label: "In Transit Counted", format: fmtNumber, numeric: true, mono: true },
-        { key: "effective_total_supply", label: "Usable Supply", format: fmtNumber, numeric: true, mono: true },
-        { key: "units_sold_in_window", label: "Baseline Units", format: fmtNumber, numeric: true, mono: true },
-        { key: "avg_daily_demand", label: "Avg Daily Demand", format: (value) => (value == null ? "N/A" : Number(value).toFixed(2)), numeric: true, mono: true },
-        { key: "forecast_uplift_pct", label: "Forecast %", format: (value) => (value == null ? "N/A" : `${Number(value).toFixed(1)}%`), numeric: true, mono: true },
-        { key: "forecast_daily_demand", label: "Forecast Daily", format: (value) => (value == null ? "N/A" : Number(value).toFixed(2)), numeric: true, mono: true },
-        { key: "forecast_units_in_horizon", label: "Forecast Horizon Units", format: fmtNumber, numeric: true, mono: true },
-        { key: "safety_stock_weeks", label: "Safety Weeks", format: fmtNumber, numeric: true, mono: true },
-        { key: "safety_stock_units", label: "Safety Units", format: fmtNumber, numeric: true, mono: true },
-        { key: "weeks_on_hand", label: "Weeks On Hand", format: (value) => (value == null ? "N/A" : Number(value).toFixed(1)), numeric: true, mono: true },
-        { key: "weeks_total_supply", label: "Weeks Total", format: (value) => (value == null ? "N/A" : Number(value).toFixed(1)), numeric: true, mono: true },
-        { key: "projected_in_transit_arrival_date", label: "Transit ETA", format: fmtDate, mono: true },
-        { key: "projected_stockout_date", label: "Projected Stockout", format: fmtDate, mono: true },
-        { key: "reorder_date", label: "Reorder Date", format: fmtDate, mono: true },
-        { key: "reorder_quantity", label: "Reorder Qty", format: fmtNumber, numeric: true, mono: true },
+        { key: "snapshot_date", label: "Inventory Snapshot Date", format: fmtDate, mono: true },
+        { key: "baseline_label", label: "Sales Baseline", mono: true },
+        { key: "baseline_start", label: "Baseline From", format: fmtDate, mono: true },
+        { key: "baseline_end", label: "Baseline To", format: fmtDate, mono: true },
+        { key: "on_hand", label: "Inventory On Hand", format: fmtNumber, numeric: true, mono: true },
+        { key: "in_transit", label: "Inventory In Transit", format: fmtNumber, numeric: true, mono: true },
+        { key: "counted_in_transit", label: "In Transit Arriving In Time", format: fmtNumber, numeric: true, mono: true },
+        { key: "effective_total_supply", label: "Usable Inventory", format: fmtNumber, numeric: true, mono: true },
+        { key: "units_sold_in_window", label: "Units Sold In Baseline", format: fmtNumber, numeric: true, mono: true },
+        { key: "avg_daily_demand", label: "Average Sold Per Day", format: (value) => (value == null ? "N/A" : Number(value).toFixed(2)), numeric: true, mono: true },
+        { key: "forecast_uplift_pct", label: "Forecast Increase %", format: (value) => (value == null ? "N/A" : `${Number(value).toFixed(1)}%`), numeric: true, mono: true },
+        { key: "forecast_daily_demand", label: "Expected Units Per Day", format: (value) => (value == null ? "N/A" : Number(value).toFixed(2)), numeric: true, mono: true },
+        { key: "forecast_units_in_horizon", label: "Need For Planning Period", format: fmtNumber, numeric: true, mono: true },
+        { key: "safety_stock_weeks", label: "Safety Buffer Weeks", format: fmtNumber, numeric: true, mono: true },
+        { key: "safety_stock_units", label: "Safety Buffer Units", format: fmtNumber, numeric: true, mono: true },
+        { key: "weeks_on_hand", label: "Weeks Covered With On Hand", format: (value) => (value == null ? "N/A" : Number(value).toFixed(1)), numeric: true, mono: true },
+        { key: "weeks_total_supply", label: "Weeks Covered With Usable Inventory", format: (value) => (value == null ? "N/A" : Number(value).toFixed(1)), numeric: true, mono: true },
+        { key: "projected_in_transit_arrival_date", label: "In Transit Arrival", format: fmtDate, mono: true },
+        { key: "projected_stockout_date", label: "Expected Stockout Date", format: fmtDate, mono: true },
+        { key: "reorder_date", label: "Reorder By", format: fmtDate, mono: true },
+        { key: "reorder_quantity", label: "Suggested Reorder", format: fmtNumber, numeric: true, mono: true },
         { key: "status", label: "Status" },
       ],
-      "Demand planning from inventory, selected planning horizon, and forecast uplift by product",
+      "Detailed planning table with the sales baseline, future planning period, and reorder math for each product.",
       { compact: true, stickyFirstColumn: true },
     )}`;
   }
@@ -2891,8 +3038,9 @@ function renderWorkspaceWithTable(workspaceKey, payload) {
           "Planning signal",
           "Coverage uses the chosen baseline, forecast uplift, safety stock, and conservative lead time.",
           metricsStackHtml([
-            { label: "Forecast baseline", value: planningConfig.baselineLabel || "Last Full Month" },
+            { label: "Forecast baseline", value: planningConfig.baselineLabel || "Last 30 Days" },
             { label: "Baseline window", value: planningConfig.baselineStart && planningConfig.baselineEnd ? `${planningConfig.baselineStart} to ${planningConfig.baselineEnd}` : "N/A" },
+            { label: "Planning horizon", value: planningConfig.horizonStart && planningConfig.horizonEnd ? `${planningConfig.horizonStart} to ${planningConfig.horizonEnd}` : "N/A" },
             { label: "Top reorder product", value: topReorderRow?.product || "None" },
             { label: "Top reorder qty", value: fmtNumber(topReorderRow?.reorder_quantity) },
           ]),
@@ -3010,9 +3158,12 @@ function renderWorkspace() {
   const applyPlanningButton = document.getElementById("applyPlanningButton");
   if (applyPlanningButton) {
     const baselineSelect = document.getElementById("planningTabBaselineSelect");
+    const horizonMonthInput = document.getElementById("planningTabHorizonMonth");
+    const horizonStartInput = document.getElementById("planningTabHorizonStart");
+    const horizonEndInput = document.getElementById("planningTabHorizonEnd");
     if (baselineSelect) {
       baselineSelect.addEventListener("change", () => {
-        state.planningSettings.baseline = baselineSelect.value || "last_full_month";
+        state.planningSettings.baseline = baselineSelect.value || "last_30_days";
         state.planningMessage = "";
         if (state.planningSettings.baseline === "custom_range") {
           renderWorkspace();
@@ -3023,13 +3174,33 @@ function renderWorkspace() {
         }
       });
     }
+    if (horizonMonthInput) {
+      horizonMonthInput.addEventListener("change", () => {
+        state.planningSettings.horizonMonth = horizonMonthInput.value || "";
+        const { start, end } = monthWindow(horizonMonthInput.value);
+        if (horizonStartInput) horizonStartInput.value = start;
+        if (horizonEndInput) horizonEndInput.value = end;
+        state.planningSettings.horizonStart = start;
+        state.planningSettings.horizonEnd = end;
+        state.planningMessage = "";
+        renderWorkspace();
+      });
+    }
+    [horizonStartInput, horizonEndInput].forEach((input) => {
+      if (!input) return;
+      input.addEventListener("change", () => {
+        state.planningSettings.horizonStart = horizonStartInput?.value || "";
+        state.planningSettings.horizonEnd = horizonEndInput?.value || "";
+        state.planningMessage = "";
+      });
+    });
 
     const applyPlanning = () => {
       if (syncPlanningStateFromDom(true)) loadDashboard();
     };
 
     applyPlanningButton.addEventListener("click", applyPlanning);
-    document.querySelectorAll("#planningTabBaselineSelect, #planningTabBaselineStart, #planningTabBaselineEnd, #planningTabDefaultUplift, [data-planning-param]").forEach((input) => {
+    document.querySelectorAll("#planningTabBaselineSelect, #planningTabBaselineStart, #planningTabBaselineEnd, [data-planning-param]").forEach((input) => {
       input.addEventListener("keydown", (event) => {
         if (event.key === "Enter") applyPlanning();
       });
@@ -3061,6 +3232,22 @@ async function loadDashboard(forceRemote = false) {
     state.planningSettings.baseline = payload.summary?.planning_baseline || state.planningSettings.baseline;
     state.planningSettings.baselineStart = payload.summary?.planning_baseline_start || state.planningSettings.baselineStart;
     state.planningSettings.baselineEnd = payload.summary?.planning_baseline_end || state.planningSettings.baselineEnd;
+    const derivedMonth = monthWindow(state.planningSettings.horizonMonth);
+    if (
+      state.planningSettings.horizonStart &&
+      state.planningSettings.horizonEnd &&
+      (!state.planningSettings.horizonMonth
+        || derivedMonth.start !== state.planningSettings.horizonStart
+        || derivedMonth.end !== state.planningSettings.horizonEnd)
+    ) {
+      const startDate = parseDateString(state.planningSettings.horizonStart);
+      const endDate = parseDateString(state.planningSettings.horizonEnd);
+      const endOfStartMonth = startDate ? new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0) : null;
+      state.planningSettings.horizonMonth =
+        startDate && endDate && endOfStartMonth && formatDateString(endOfStartMonth) === formatDateString(endDate)
+          ? `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, "0")}`
+          : "";
+    }
     state.planningSettings.defaultUpliftPct = String(payload.summary?.planning_default_uplift ?? state.planningSettings.defaultUpliftPct);
     (payload.planningConfig?.productForecasts || []).forEach((item) => {
       const planningInput = planningInputs.find((entry) => entry.product === item.product);

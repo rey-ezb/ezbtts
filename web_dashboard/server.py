@@ -20,6 +20,7 @@ from web_dashboard.demand_planning import (
     calculate_planning_row,
     choose_baseline_window,
     planning_defaults,
+    resolve_planning_horizon,
 )
 from web_dashboard.dashboard_response_cache import DashboardResponseCache
 from web_dashboard.file_replacement import keep_latest_file_rows_by_date
@@ -646,6 +647,58 @@ def build_filtered_product_view(raw_df: pd.DataFrame) -> pd.DataFrame:
     grouped[["sales_units", "sample_units", "replacement_units"]] = grouped[
         ["sales_units", "sample_units", "replacement_units"]
     ].fillna(0)
+    sales_only = working.loc[working["source_type"].eq("Sales")].copy()
+    if not sales_only.empty:
+        solo_order_candidates = (
+            sales_only.groupby("Order ID", as_index=False)
+            .agg(
+                order_product_count=("seller_sku_resolved", pd.Series.nunique),
+                order_total_units=("Quantity", "sum"),
+                shipping_fee_after_discount=("Shipping Fee After Discount", "max"),
+            )
+        )
+        eligible_order_ids = solo_order_candidates.loc[
+            solo_order_candidates["order_product_count"].eq(1) & solo_order_candidates["order_total_units"].eq(1),
+            "Order ID",
+        ]
+        solo_shipping = (
+            sales_only.loc[sales_only["Order ID"].isin(eligible_order_ids)]
+            .groupby(["canonical_item_name", "seller_sku_resolved"], dropna=False, as_index=False)
+            .agg(
+                solo_shipping_orders=("Order ID", pd.Series.nunique),
+                solo_shipping_total=("Shipping Fee After Discount", "sum"),
+                solo_units_sold=("Quantity", "sum"),
+            )
+            .rename(columns={"canonical_item_name": "product_name"})
+        )
+        solo_shipping["solo_avg_shipping_per_unit"] = solo_shipping.apply(
+            lambda row: row["solo_shipping_total"] / row["solo_units_sold"] if row["solo_units_sold"] else None,
+            axis=1,
+        )
+        solo_shipping["solo_avg_shipping_per_sku"] = solo_shipping.apply(
+            lambda row: row["solo_shipping_total"] / row["solo_shipping_orders"] if row["solo_shipping_orders"] else None,
+            axis=1,
+        )
+        grouped = grouped.merge(
+            solo_shipping[
+                [
+                    "product_name",
+                    "seller_sku_resolved",
+                    "solo_shipping_orders",
+                    "solo_avg_shipping_per_unit",
+                    "solo_avg_shipping_per_sku",
+                ]
+            ],
+            on=["product_name", "seller_sku_resolved"],
+            how="left",
+        )
+    else:
+        grouped["solo_shipping_orders"] = 0.0
+        grouped["solo_avg_shipping_per_unit"] = None
+        grouped["solo_avg_shipping_per_sku"] = None
+    if "solo_shipping_orders" not in grouped.columns:
+        grouped["solo_shipping_orders"] = 0.0
+    grouped["solo_shipping_orders"] = grouped["solo_shipping_orders"].fillna(0.0)
     return grouped
 
 
@@ -2685,9 +2738,11 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
     target_city = params.get("target_city", [""])[0]
     target_state = params.get("target_state", [""])[0]
     city_radius_miles = int(params.get("city_radius_miles", [str(radius_miles)])[0] or radius_miles)
-    planning_baseline = params.get("planning_baseline", ["last_full_month"])[0]
+    planning_baseline = params.get("planning_baseline", ["last_30_days"])[0]
     planning_baseline_start_raw = params.get("planning_baseline_start", [""])[0]
     planning_baseline_end_raw = params.get("planning_baseline_end", [""])[0]
+    planning_horizon_start_raw = params.get("planning_horizon_start", [""])[0]
+    planning_horizon_end_raw = params.get("planning_horizon_end", [""])[0]
     planning_default_uplift = float(params.get("planning_default_uplift", [str(DEFAULT_FORECAST_UPLIFT_PCT)])[0] or DEFAULT_FORECAST_UPLIFT_PCT)
     selected_sources = [part for part in sources_raw.split(",") if part] or store.available_sources()
 
@@ -2695,6 +2750,14 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
     end_date = pd.Timestamp(end_raw)
     planning_baseline_start = pd.Timestamp(planning_baseline_start_raw) if str(planning_baseline_start_raw).strip() else start_date
     planning_baseline_end = pd.Timestamp(planning_baseline_end_raw) if str(planning_baseline_end_raw).strip() else end_date
+    planning_horizon_start = pd.Timestamp(planning_horizon_start_raw) if str(planning_horizon_start_raw).strip() else start_date
+    planning_horizon_end = pd.Timestamp(planning_horizon_end_raw) if str(planning_horizon_end_raw).strip() else end_date
+    planning_horizon_start, planning_horizon_end = resolve_planning_horizon(
+        start_date,
+        end_date,
+        planning_horizon_start,
+        planning_horizon_end,
+    )
 
     output_data = load_output_data(output_dir)
     kpi_full_df = output_data["kpi_full"]
@@ -2758,8 +2821,8 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
     inventory_planning_df = build_inventory_planning_rows(
         planning_component_cogs_df,
         inventory_snapshot,
-        start_date,
-        end_date,
+        planning_horizon_start,
+        planning_horizon_end,
         baseline_start,
         baseline_end,
         forecast_overrides,
@@ -2803,6 +2866,8 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
         "planning_baseline": planning_baseline,
         "planning_baseline_start": baseline_start.strftime("%Y-%m-%d"),
         "planning_baseline_end": baseline_end.strftime("%Y-%m-%d"),
+        "planning_horizon_start": planning_horizon_start.strftime("%Y-%m-%d"),
+        "planning_horizon_end": planning_horizon_end.strftime("%Y-%m-%d"),
         "planning_default_uplift": planning_default_uplift,
     }
 
@@ -2845,6 +2910,8 @@ def dashboard_payload(params: dict[str, list[str]]) -> dict[str, Any]:
             "baselineLabel": baseline_label,
             "baselineStart": json_safe(baseline_start),
             "baselineEnd": json_safe(baseline_end),
+            "horizonStart": json_safe(planning_horizon_start),
+            "horizonEnd": json_safe(planning_horizon_end),
             "defaultUpliftPct": planning_default_uplift,
             "productForecasts": [{"product": product, "uplift_pct": json_safe(value)} for product, value in forecast_overrides.items()],
         },

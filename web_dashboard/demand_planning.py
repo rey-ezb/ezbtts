@@ -27,7 +27,7 @@ FORECAST_PRODUCT_PARAM_MAP = {
 
 def planning_defaults() -> dict[str, Any]:
     return {
-        "baseline": "last_full_month",
+        "baseline": "last_30_days",
         "default_uplift_pct": DEFAULT_FORECAST_UPLIFT_PCT,
         "baselineOptions": PLANNING_BASELINE_OPTIONS,
         "productOverrides": [
@@ -35,6 +35,19 @@ def planning_defaults() -> dict[str, Any]:
             for product, param in FORECAST_PRODUCT_PARAM_MAP.items()
         ],
     }
+
+
+def resolve_planning_horizon(
+    default_start: pd.Timestamp,
+    default_end: pd.Timestamp,
+    explicit_start: pd.Timestamp | None = None,
+    explicit_end: pd.Timestamp | None = None,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    horizon_start = pd.Timestamp(explicit_start or default_start).normalize()
+    horizon_end = pd.Timestamp(explicit_end or default_end).normalize()
+    if horizon_start > horizon_end:
+        horizon_start, horizon_end = horizon_end, horizon_start
+    return horizon_start, horizon_end
 
 
 def choose_baseline_window(

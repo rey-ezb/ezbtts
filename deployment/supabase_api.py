@@ -5,7 +5,7 @@ import mimetypes
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -22,6 +22,13 @@ def service_role_key() -> str:
 
 def supabase_url() -> str:
     return require_env("SUPABASE_URL")
+
+
+def build_storage_object_url(bucket: str, object_path: str) -> str:
+    normalized_bucket = str(bucket or "").strip().strip("/")
+    normalized_path = str(object_path or "").lstrip("/")
+    encoded_path = quote(normalized_path, safe="/")
+    return f"{supabase_url()}/storage/v1/object/{normalized_bucket}/{encoded_path}"
 
 
 def rest_request(method: str, path: str, payload: Any | None = None, query: dict[str, str] | None = None) -> Any:
@@ -113,7 +120,7 @@ def delete_rows(table: str, *, query: dict[str, str]) -> None:
 
 
 def upload_storage_file(file_path: Path, bucket: str, object_path: str) -> None:
-    storage_url = f"{supabase_url()}/storage/v1/object/{bucket}/{object_path.lstrip('/')}"
+    storage_url = build_storage_object_url(bucket, object_path)
     content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
     request = Request(
         storage_url,
@@ -131,7 +138,7 @@ def upload_storage_file(file_path: Path, bucket: str, object_path: str) -> None:
 
 
 def upload_storage_bytes(content: bytes, bucket: str, object_path: str, *, content_type: str = "application/octet-stream") -> None:
-    storage_url = f"{supabase_url()}/storage/v1/object/{bucket}/{object_path.lstrip('/')}"
+    storage_url = build_storage_object_url(bucket, object_path)
     request = Request(
         storage_url,
         data=content,
@@ -173,7 +180,7 @@ def list_storage_objects(bucket: str, prefix: str = "") -> list[dict[str, Any]]:
 
 
 def download_storage_file(bucket: str, object_path: str, destination: Path) -> Path:
-    download_url = f"{supabase_url()}/storage/v1/object/{bucket}/{object_path.lstrip('/')}"
+    download_url = build_storage_object_url(bucket, object_path)
     request = Request(
         download_url,
         method="GET",

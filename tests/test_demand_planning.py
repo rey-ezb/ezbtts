@@ -4,10 +4,20 @@ import unittest
 
 import pandas as pd
 
-from web_dashboard.demand_planning import calculate_planning_row, choose_baseline_window, safety_stock_weeks_for_date
+from web_dashboard.demand_planning import (
+    calculate_planning_row,
+    choose_baseline_window,
+    planning_defaults,
+    resolve_planning_horizon,
+    safety_stock_weeks_for_date,
+)
 
 
 class DemandPlanningTests(unittest.TestCase):
+    def test_planning_defaults_use_last_30_days(self) -> None:
+        defaults = planning_defaults()
+        self.assertEqual(defaults["baseline"], "last_30_days")
+
     def test_choose_baseline_window_last_full_month(self) -> None:
         start, end, label = choose_baseline_window(pd.Timestamp("2026-04-14"), "last_full_month", pd.Timestamp("2026-05-01"), pd.Timestamp("2026-05-31"))
         self.assertEqual((str(start.date()), str(end.date()), label), ("2026-03-01", "2026-03-31", "Last Full Month"))
@@ -22,6 +32,24 @@ class DemandPlanningTests(unittest.TestCase):
             pd.Timestamp("2026-02-28"),
         )
         self.assertEqual((str(start.date()), str(end.date()), label), ("2026-02-01", "2026-02-28", "Custom Range"))
+
+    def test_resolve_planning_horizon_uses_explicit_future_range(self) -> None:
+        start, end = resolve_planning_horizon(
+            pd.Timestamp("2026-03-17"),
+            pd.Timestamp("2026-04-15"),
+            pd.Timestamp("2026-05-01"),
+            pd.Timestamp("2026-05-31"),
+        )
+        self.assertEqual((str(start.date()), str(end.date())), ("2026-05-01", "2026-05-31"))
+
+    def test_resolve_planning_horizon_swaps_inverted_range(self) -> None:
+        start, end = resolve_planning_horizon(
+            pd.Timestamp("2026-03-17"),
+            pd.Timestamp("2026-04-15"),
+            pd.Timestamp("2026-08-31"),
+            pd.Timestamp("2026-08-01"),
+        )
+        self.assertEqual((str(start.date()), str(end.date())), ("2026-08-01", "2026-08-31"))
 
     def test_safety_stock_weeks_changes_by_quarter(self) -> None:
         self.assertEqual(safety_stock_weeks_for_date(pd.Timestamp("2026-05-10")), 3)
