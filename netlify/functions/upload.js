@@ -84,17 +84,6 @@ async function insertUploadBatch(record) {
   return rows[0] || record;
 }
 
-async function triggerBuildHook() {
-  const hookUrl = String(process.env.NETLIFY_BUILD_HOOK_URL || "").trim();
-  if (!hookUrl) return false;
-  const response = await fetch(hookUrl, { method: "POST" });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`Netlify build hook failed: ${response.status} ${detail}`);
-  }
-  return true;
-}
-
 export default async (request) => {
   if (request.method !== "POST") return jsonErrorResponse(405, "Method not allowed.");
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY || !process.env.SUPABASE_UPLOAD_BUCKET) {
@@ -134,14 +123,11 @@ export default async (request) => {
         storage_path: uploaded.storage_path || objectPath,
       });
     }
-    const rebuildTriggered = await triggerBuildHook();
     return jsonResponse(200, {
-      message: rebuildTriggered
-        ? `Uploaded ${savedFiles.length} file(s) to hosted storage. A rebuild was triggered.`
-        : `Uploaded ${savedFiles.length} file(s) to hosted storage.`,
+      message: `Uploaded ${savedFiles.length} file(s) to hosted storage.`,
       savedFiles,
       storageMode: "supabase",
-      rebuildTriggered,
+      rebuildTriggered: false,
     });
   } catch (error) {
     return jsonErrorResponse(500, error instanceof Error ? error.message : "Hosted upload failed.");

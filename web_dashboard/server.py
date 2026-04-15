@@ -2964,6 +2964,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/upload":
             self.handle_upload()
             return
+        if parsed.path == "/api/rebuild":
+            self.handle_rebuild()
+            return
         self.send_error(404, "Not Found")
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -3048,22 +3051,33 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         STORE = None
         DASHBOARD_RESPONSE_CACHE.clear()
         if use_hosted_uploads:
+            self.respond_json(
+                {
+                    "message": f"Uploaded {len(saved_files)} file(s) to hosted storage.",
+                    "savedFiles": saved_files,
+                    "storageMode": "supabase",
+                    "rebuildTriggered": False,
+                }
+            )
+            return
+        self.respond_json({"message": f"Uploaded {len(saved_files)} file(s) to {target_dir.name}.", "savedFiles": saved_files, "storageMode": "local"})
+
+    def handle_rebuild(self) -> None:
+        if hosted_uploads_enabled():
             try:
                 from deployment.sync_dashboard_to_supabase import main as sync_dashboard_to_supabase
 
                 sync_dashboard_to_supabase()
             except Exception as error:  # noqa: BLE001
-                self.respond_json_error(500, f"Hosted rebuild failed after upload: {error}")
+                self.respond_json_error(500, f"Hosted rebuild failed: {error}")
                 return
-            self.respond_json(
-                {
-                    "message": f"Uploaded {len(saved_files)} file(s) to hosted storage and rebuilt the dashboard snapshot.",
-                    "savedFiles": saved_files,
-                    "storageMode": "supabase",
-                }
-            )
+            self.respond_json({"message": "Snapshot rebuild triggered.", "rebuildTriggered": True, "storageMode": "supabase"})
             return
-        self.respond_json({"message": f"Uploaded {len(saved_files)} file(s) to {target_dir.name}.", "savedFiles": saved_files, "storageMode": "local"})
+
+        global STORE
+        STORE = None
+        DASHBOARD_RESPONSE_CACHE.clear()
+        self.respond_json({"message": "Local dashboard cache cleared.", "rebuildTriggered": True, "storageMode": "local"})
 
 
 def main() -> None:

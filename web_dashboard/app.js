@@ -69,6 +69,11 @@ function uploadUrl() {
   return config.uploadUrl || "/api/upload";
 }
 
+function rebuildUrl() {
+  const config = getDashboardConfig();
+  return config.rebuildUrl || "/api/rebuild";
+}
+
 function staticModeEnabled() {
   return state.deploymentMode === "static";
 }
@@ -1130,6 +1135,17 @@ async function postForm(url, formData) {
   return payload;
 }
 
+async function postJson(url, payload = {}) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || body.message || `Request failed: ${response.status}`);
+  return body;
+}
+
 function selectedSources() {
   return [...document.querySelectorAll("input[name='source']:checked")].map((el) => el.value);
 }
@@ -1219,6 +1235,19 @@ function setUploadState(isLoading, message = "") {
   }
 }
 
+function setRefreshState(isLoading, label = "") {
+  const refreshButton = document.getElementById("refreshButton");
+  const uploadStatus = document.getElementById("uploadStatus");
+  if (refreshButton) {
+    refreshButton.disabled = isLoading;
+    refreshButton.textContent = isLoading ? "Rebuilding..." : label || refreshButton.textContent || "Refresh data";
+    refreshButton.setAttribute("aria-busy", isLoading ? "true" : "false");
+  }
+  if (uploadStatus && label && !isLoading) {
+    uploadStatus.textContent = label;
+  }
+}
+
 function renderSourceToggles(sources) {
   const container = document.getElementById("sourceToggles");
   container.innerHTML = sources
@@ -1290,7 +1319,7 @@ function renderMeta(meta) {
 
 function applyDeploymentModeUi() {
   if (!staticModeEnabled()) return;
-  document.getElementById("refreshButton").textContent = "Reload snapshot";
+  document.getElementById("refreshButton").textContent = "Rebuild snapshot";
   const uploadButton = document.getElementById("uploadButton");
   if (uploadButton) {
     uploadButton.disabled = false;
@@ -1298,7 +1327,7 @@ function applyDeploymentModeUi() {
   }
   const uploadStatus = document.getElementById("uploadStatus");
   if (uploadStatus) {
-    uploadStatus.textContent = "Hosted mode uploads to shared storage, then refreshes the hosted snapshot.";
+    uploadStatus.textContent = "Hosted mode uploads store files in shared storage. Use Rebuild snapshot only when you want to refresh live data.";
   }
 }
 
@@ -3291,6 +3320,20 @@ async function uploadFiles() {
   }
 }
 
+async function rebuildSnapshot() {
+  if (!staticModeEnabled()) {
+    await loadDashboard(true);
+    return;
+  }
+  setRefreshState(true);
+  try {
+    const result = await postJson(rebuildUrl(), {});
+    setRefreshState(false, result.message || "Snapshot rebuild triggered.");
+  } catch (error) {
+    setRefreshState(false, error.message);
+  }
+}
+
 async function init() {
   state.deploymentMode = resolveDeploymentMode();
   state.meta = await fetchJson(metaUrl());
@@ -3307,7 +3350,7 @@ async function init() {
     state.targetingExpanded = !state.targetingExpanded;
     renderTargetingExpanded();
   });
-  document.getElementById("refreshButton").addEventListener("click", () => loadDashboard(true));
+  document.getElementById("refreshButton").addEventListener("click", rebuildSnapshot);
   document.getElementById("uploadButton").addEventListener("click", uploadFiles);
   ["startDate", "endDate", "targetZip", "radiusMilesSelect", "targetCity", "cityRadiusMilesSelect", "targetState"].forEach((id) => {
     document.getElementById(id).addEventListener("keydown", (event) => {
