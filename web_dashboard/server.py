@@ -1122,7 +1122,7 @@ def classify_statement_category(statement_type: str, description: str) -> str:
 
 def load_statement_rows_uncached(files: list[Path]) -> pd.DataFrame:
     if not files:
-        return pd.DataFrame()
+        return empty_statement_rows()
 
     frames: list[pd.DataFrame] = []
     for path in files:
@@ -1132,7 +1132,7 @@ def load_statement_rows_uncached(files: list[Path]) -> pd.DataFrame:
             frame["statement_source_mtime"] = path.stat().st_mtime
             frames.append(frame)
     if not frames:
-        return pd.DataFrame()
+        return empty_statement_rows()
 
     df = pd.concat(frames, ignore_index=True)
     df.columns = [str(column).strip() for column in df.columns]
@@ -1284,13 +1284,81 @@ def load_statement_rows_uncached(files: list[Path]) -> pd.DataFrame:
         file_column="statement_source_file",
         mtime_column="statement_source_mtime",
     )
-    return normalized.reset_index(drop=True)
+    return normalized.reindex(columns=STATEMENT_ROW_COLUMNS).reset_index(drop=True)
+
+
+STATEMENT_ROW_COLUMNS = [
+    "order_id",
+    "statement_date",
+    "statement_type",
+    "description",
+    "statement_source_file",
+    "statement_source_mtime",
+    "category",
+    "amount",
+    "total_settlement_amount",
+    "statement_net_sales",
+    "statement_gross_sales",
+    "statement_gross_sales_refund",
+    "statement_seller_discount",
+    "statement_seller_discount_refund",
+    "statement_shipping",
+    "statement_tiktok_shipping_fee",
+    "statement_fbt_shipping_fee",
+    "statement_customer_paid_shipping_fee",
+    "statement_customer_paid_shipping_fee_refund",
+    "statement_tiktok_shipping_incentive",
+    "statement_tiktok_shipping_incentive_refund",
+    "statement_shipping_fee_subsidy",
+    "statement_return_shipping_fee",
+    "statement_fbt_fulfillment_fee",
+    "statement_customer_shipping_fee_offset",
+    "statement_shipping_fee_discount",
+    "statement_return_shipping_label_fee",
+    "statement_fbt_fulfillment_fee_reimbursement",
+    "statement_fees",
+    "statement_transaction_fee",
+    "statement_referral_fee",
+    "statement_refund_admin_fee",
+    "statement_affiliate_commission",
+    "statement_affiliate_partner_commission",
+    "statement_affiliate_shop_ads_commission",
+    "statement_affiliate_partner_shop_ads_commission",
+    "statement_tiktok_partner_commission",
+    "statement_cofunded_promotion",
+    "statement_campaign_service_fee",
+    "statement_smart_promotion_fee",
+    "statement_marketing_benefits_package_fee",
+    "statement_adjustment_amount",
+    "statement_logistics_reimbursement",
+    "statement_gmv_deduction_fbt_warehouse_fee",
+    "statement_tiktok_shop_reimbursement",
+    "statement_customer_payment",
+    "statement_customer_refund",
+    "statement_seller_voucher_discount",
+    "statement_seller_voucher_discount_refund",
+    "statement_platform_discounts",
+    "statement_platform_discounts_refund",
+    "statement_sales_tax_payment",
+    "statement_sales_tax_refund",
+    "typed_shipping_fee",
+    "typed_fulfillment_fee",
+    "typed_referral_fee",
+    "typed_affiliate_fee",
+    "typed_marketing_fee",
+    "typed_service_fee",
+    "typed_other_fee",
+]
+
+
+def empty_statement_rows() -> pd.DataFrame:
+    return pd.DataFrame(columns=STATEMENT_ROW_COLUMNS)
 
 
 def load_statement_rows(start_date: pd.Timestamp | None = None, end_date: pd.Timestamp | None = None) -> pd.DataFrame:
     files = candidate_statement_files(start_date, end_date)
     if not files:
-        return pd.DataFrame()
+        return empty_statement_rows()
 
     cached: dict[str, Any] = {"cache_schema_version": STATEMENT_CACHE_SCHEMA_VERSION, "files": {}}
     if STATEMENT_CACHE_FILE.exists():
@@ -1326,17 +1394,17 @@ def load_statement_rows(start_date: pd.Timestamp | None = None, end_date: pd.Tim
         pd.to_pickle(cached, STATEMENT_CACHE_FILE)
 
     if not frames:
-        return pd.DataFrame()
+        return empty_statement_rows()
     df = pd.concat(frames, ignore_index=True)
     if start_date is not None and end_date is not None:
         df = df.loc[df["statement_date"].between(start_date, end_date)].copy()
-    return df.reset_index(drop=True)
+    return df.reindex(columns=STATEMENT_ROW_COLUMNS).reset_index(drop=True)
 
 
 def load_statement_rows_legacy(start_date: pd.Timestamp | None = None, end_date: pd.Timestamp | None = None) -> pd.DataFrame:
     files = candidate_statement_files(start_date, end_date)
     if not files:
-        return pd.DataFrame()
+        return empty_statement_rows()
 
     frames: list[pd.DataFrame] = []
     for path in files:
@@ -1345,7 +1413,7 @@ def load_statement_rows_legacy(start_date: pd.Timestamp | None = None, end_date:
             frame["statement_source_file"] = path.name
             frames.append(frame)
     if not frames:
-        return pd.DataFrame()
+        return empty_statement_rows()
 
     df = pd.concat(frames, ignore_index=True)
     df.columns = [str(column).strip() for column in df.columns]
@@ -1490,7 +1558,7 @@ def load_statement_rows_legacy(start_date: pd.Timestamp | None = None, end_date:
     working["typed_other_fee"] = typed_amount.where(typed_category.eq("other") & detail_fee_presence, 0.0)
     working = working.dropna(subset=["statement_date"]).copy()
     working = working.loc[working["order_id"].ne("") | working["amount"].ne(0)].copy()
-    return working.reset_index(drop=True)
+    return working.reindex(columns=STATEMENT_ROW_COLUMNS).reset_index(drop=True)
 
 
 def load_zip_reference() -> pd.DataFrame:

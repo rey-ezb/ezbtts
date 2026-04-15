@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from web_dashboard.server import build_reconciliation_view, build_statement_daily_table
+from web_dashboard.server import build_reconciliation_view, build_statement_daily_table, empty_statement_rows
 
 
 class ReconciliationTests(unittest.TestCase):
@@ -41,6 +41,12 @@ class ReconciliationTests(unittest.TestCase):
 
         self.assertIn("reporting_date", daily.columns)
         self.assertEqual(len(daily), 0)
+
+    def test_empty_statement_rows_keep_statement_date_column(self) -> None:
+        rows = empty_statement_rows()
+
+        self.assertIn("statement_date", rows.columns)
+        self.assertEqual(len(rows), 0)
 
 
 if __name__ == "__main__":
