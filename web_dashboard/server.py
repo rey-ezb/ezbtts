@@ -2281,8 +2281,20 @@ def build_order_daily_table(finance_df: pd.DataFrame, operational_df: pd.DataFra
 
 
 def build_statement_daily_table(statement_rows: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "reporting_date",
+        "gross_sales",
+        "gross_sales_refund",
+        "seller_discount",
+        "seller_discount_refund",
+        "net_sales",
+        "shipping_total",
+        "fees_total",
+        "adjustments_total",
+        "payout_amount",
+    ]
     if statement_rows is None or statement_rows.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=columns)
     daily = (
         statement_rows.groupby("statement_date", as_index=False)
         .agg(
@@ -2299,7 +2311,7 @@ def build_statement_daily_table(statement_rows: pd.DataFrame) -> pd.DataFrame:
         .rename(columns={"statement_date": "reporting_date"})
         .sort_values("reporting_date", ascending=False)
     )
-    return daily.reset_index(drop=True)
+    return daily.reindex(columns=columns).reset_index(drop=True)
 
 
 def upgrade_cached_finance(raw_finance: pd.DataFrame) -> pd.DataFrame:

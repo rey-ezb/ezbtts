@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from web_dashboard.server import build_reconciliation_view
+from web_dashboard.server import build_reconciliation_view, build_statement_daily_table
 
 
 class ReconciliationTests(unittest.TestCase):
@@ -35,6 +35,12 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(summary["matched_orders"], 1)
         self.assertEqual(summary["unmatched_orders"], 1)
         self.assertEqual(float(matched.loc[0, "statement_amount_total"]), 0.0)
+
+    def test_statement_daily_table_keeps_reporting_date_column_when_empty(self) -> None:
+        daily = build_statement_daily_table(pd.DataFrame())
+
+        self.assertIn("reporting_date", daily.columns)
+        self.assertEqual(len(daily), 0)
 
 
 if __name__ == "__main__":
